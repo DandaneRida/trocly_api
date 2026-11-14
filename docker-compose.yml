@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trocly-postgres
+    environment:
+      POSTGRES_USER: troc
+      POSTGRES_PASSWORD: troc
+      POSTGRES_DB: trocly_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata_new:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  redis:
+    image: redis:7-alpine
+    container_name: trocly-redis
+    ports:
+      - "6379:6379"
+volumes:
+  pgdata_new:
