@@ -19,11 +19,11 @@ import { UploadModule } from './upload/upload.module';
   imports: [
     TypeOrmModule.forRoot({
       type: 'postgres',
-      host: 'localhost',
-      port: 5433,
-      username: 'troc',
-      password: 'troc', 
-      database: 'trocly_db', 
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5432'),
+      username: process.env.DB_USERNAME || 'troc',
+      password: process.env.DB_PASSWORD || 'troc',
+      database: process.env.DB_NAME || 'trocly_db',
       autoLoadEntities: true,
       synchronize: false,  // DISABLED - use migrations instead
       logging: false,  // Reduce logs
