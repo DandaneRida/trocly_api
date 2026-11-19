@@ -5,19 +5,20 @@ import {
   Patch,
   Param,
   Body,
-  Query,
-  BadRequestException,
+  UseGuards,
+  Request,
 } from '@nestjs/common';
 import { OffersService } from './offers.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('offers')
+@UseGuards(JwtAuthGuard)
 export class OffersController {
   constructor(private offersService: OffersService) {}
 
   /**
-   * C1 - Create a new offer
+   * C1 - Create a new multi-object offer with optional soulte
    * POST /offers
-   * Body: { targetListingId, offeringListingIds[], soulte?, message? }
    */
   @Post()
   async createOffer(
@@ -28,14 +29,48 @@ export class OffersController {
       soulte?: number;
       message?: string;
     },
-    @Query('initiatorId') initiatorId?: string, // TODO: Get from JWT
-    @Query('responderId') responderId?: string,
+    @Request() req: any,
   ) {
-    if (!initiatorId || !responderId) {
-      throw new BadRequestException('initiatorId and responderId required');
-    }
+    return this.offersService.createOffer(req.user.sub, body);
+  }
 
-    return this.offersService.createOffer(initiatorId, responderId, body);
+  /**
+   * Get offers received by authenticated user
+   * GET /offers/user/received
+   */
+  @Get('user/received')
+  async getReceivedOffers(@Request() req: any) {
+    return this.offersService.getReceivedOffers(req.user.sub);
+  }
+
+  /**
+   * Get offers sent by authenticated user
+   * GET /offers/user/sent
+   */
+  @Get('user/sent')
+  async getSentOffers(@Request() req: any) {
+    return this.offersService.getSentOffers(req.user.sub);
+  }
+
+  /**
+   * Get offer history grouped by status
+   * GET /offers/user/history
+   */
+  @Get('user/history')
+  async getOfferHistory(@Request() req: any) {
+    return this.offersService.getOfferHistory(req.user.sub);
+  }
+
+  /**
+   * Get all offers for a specific listing
+   * GET /offers/listing/:listingId
+   */
+  @Get('listing/:listingId')
+  async getListingOffers(
+    @Param('listingId') listingId: string,
+    @Request() req: any,
+  ) {
+    return this.offersService.getListingOffers(listingId, req.user.sub);
   }
 
   /**
@@ -52,12 +87,8 @@ export class OffersController {
    * PATCH /offers/:id/accept
    */
   @Patch(':id/accept')
-  async acceptOffer(
-    @Param('id') offerId: string,
-    @Query('userId') userId?: string, // TODO: Get from JWT
-  ) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.offersService.acceptOffer(offerId, userId);
+  async acceptOffer(@Param('id') offerId: string, @Request() req: any) {
+    return this.offersService.acceptOffer(offerId, req.user.sub);
   }
 
   /**
@@ -65,12 +96,8 @@ export class OffersController {
    * PATCH /offers/:id/reject
    */
   @Patch(':id/reject')
-  async rejectOffer(
-    @Param('id') offerId: string,
-    @Query('userId') userId?: string, // TODO: Get from JWT
-  ) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.offersService.rejectOffer(offerId, userId);
+  async rejectOffer(@Param('id') offerId: string, @Request() req: any) {
+    return this.offersService.rejectOffer(offerId, req.user.sub);
   }
 
   /**
@@ -86,52 +113,12 @@ export class OffersController {
       counterSoulte?: number;
       message?: string;
     },
-    @Query('userId') userId?: string, // TODO: Get from JWT
+    @Request() req: any,
   ) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.offersService.createCounterOffer(userId, originalOfferId, body);
-  }
-
-  /**
-   * Get offers received by user
-   * GET /offers/user/received
-   */
-  @Get('user/received')
-  async getReceivedOffers(@Query('userId') userId?: string) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.offersService.getReceivedOffers(userId);
-  }
-
-  /**
-   * Get offers sent by user
-   * GET /offers/user/sent
-   */
-  @Get('user/sent')
-  async getSentOffers(@Query('userId') userId?: string) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.offersService.getSentOffers(userId);
-  }
-
-  /**
-   * Get all offers for a specific listing
-   * GET /offers/listing/:listingId
-   */
-  @Get('listing/:listingId')
-  async getListingOffers(
-    @Param('listingId') listingId: string,
-    @Query('userId') userId?: string,
-  ) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.offersService.getListingOffers(listingId, userId);
-  }
-
-  /**
-   * Get offer history (pending, accepted, rejected, countered)
-   * GET /offers/user/history
-   */
-  @Get('user/history')
-  async getOfferHistory(@Query('userId') userId?: string) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.offersService.getOfferHistory(userId);
+    return this.offersService.createCounterOffer(
+      req.user.sub,
+      originalOfferId,
+      body,
+    );
   }
 }
