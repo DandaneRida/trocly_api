@@ -237,22 +237,100 @@ export class MeetingsService implements OnModuleInit {
     return saved;
   }
 
-  async scanQRCode(payload: string, scannedByUserId: string): Promise<any> {
+  /**
+   * D3 - Double-scan cross QR validation:
+   * Both initiator and responder must scan each other's signed QR payload.
+   * When both scans are recorded, meeting becomes VALIDATED and linked listings become EXCHANGED.
+   */
+  async scanQRCode(payload: string, scannedByUserId: string): Promise<Meeting> {
     const decoded = this.verifyQRPayload(payload);
     if (!decoded) {
       throw new BadRequestException('QR code invalide ou expiré');
     }
+
     const meeting = await this.meetingRepo.findOne({
       where: { id: decoded.meetingId },
       relations: { initiator: true, responder: true },
     });
-    if (!meeting) throw new NotFoundException('Rendez-vous introuvable');
-    if (meeting.status !== MeetingStatus.ACCEPTED) {
-      throw new BadRequestException('Le rendez-vous doit être accepté avant le scan');
+    if (!meeting) {
+      throw new NotFoundException('Rendez-vous introuvable');
     }
-    meeting.status = MeetingStatus.VALIDATED;
-    meeting.scannedAt = new Date();
-    meeting.scannedById = scannedByUserId;
+
+    const isInitiator = meeting.initiator?.id === scannedByUserId;
+    const isResponder = meeting.responder?.id === scannedByUserId;
+    if (!isInitiator && !isResponder) {
+      throw new ForbiddenException('Vous ne participez pas à ce rendez-vous');
+    }
+
+    if (decoded.userId === scannedByUserId) {
+      throw new BadRequestException(
+        'Vous ne pouvez pas scanner votre propre QR code',
+      );
+    }
+
+    const expectedPartnerId = isInitiator
+      ? meeting.responder?.id
+      : meeting.initiator?.id;
+    if (decoded.userId !== expectedPartnerId) {
+      throw new BadRequestException(
+        'Ce QR code ne correspond pas à votre partenaire',
+      );
+    }
+
+    if (meeting.expiresAt && new Date() > meeting.expiresAt) {
+      meeting.status = MeetingStatus.EXPIRED;
+      await this.meetingRepo.save(meeting);
+      throw new BadRequestException('Ce rendez-vous a expiré (> 2h)');
+    }
+
+    if (meeting.status !== MeetingStatus.ACCEPTED) {
+      throw new BadRequestException(
+        'Le rendez-vous doit être accepté avant de scanner',
+      );
+    }
+
+    const now = new Date();
+    if (isInitiator) {
+      meeting.initiatorScannedAt = now;
+    } else {
+      meeting.responderScannedAt = now;
+    }
+
+    // Complete validation only when BOTH participants have scanned each other
+    if (meeting.initiatorScannedAt && meeting.responderScannedAt) {
+      meeting.status = MeetingStatus.VALIDATED;
+      meeting.scannedAt = now;
+      meeting.scannedById = scannedByUserId;
+
+      // Mark all listings involved in the offer as exchanged
+      const offer = await this.offerRepo.findOne({
+        where: { id: meeting.offerId },
+        relations: { items: { listing: true } },
+      });
+      if (offer?.items?.length) {
+        for (const item of offer.items) {
+          if (item.listing) {
+            await this.listingRepo.update(item.listing.id, {
+              status: 'exchanged' as any,
+            });
+          }
+        }
+      }
+
+      // Notify both participants to leave mutual reviews (D5)
+      for (const uid of [meeting.initiator.id, meeting.responder.id]) {
+        this.notificationsService
+          .notifyUser(
+            uid,
+            NotificationType.MEETING_VALIDATED,
+            'Échange validé par double scan !',
+            'Laissez maintenant un avis à votre partenaire.',
+            { meetingId: meeting.id, route: `/review/${meeting.id}` },
+          )
+          .catch(() => {});
+      }
+    }
+
     return this.meetingRepo.save(meeting);
   }
 
