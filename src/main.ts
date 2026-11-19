@@ -4,15 +4,44 @@ dotenv.config();
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { join } from 'path';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.enableCors();
-  // Servir les uploads en public pour que Flutter et le Web puissent afficher les images
+
+  // Serve uploaded images publicly
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
     prefix: '/uploads/',
   });
-  await app.listen(process.env.PORT ?? 3000);
+
+  // F1 - OpenAPI / Swagger documentation at /api/docs
+  const config = new DocumentBuilder()
+    .setTitle('Trocly API')
+    .setDescription(
+      'API de la plateforme de troc local Trocly (PI_4A_12 · ENSAM Meknès) — Auth OTP WhatsApp, Annonces & Villes, Offres multi-objets, Chat temps réel, RDV double scan QR, Avis mutuels, Signalements & Admin.',
+    )
+    .setVersion('1.0')
+    .addBearerAuth()
+    .addTag('auth', 'Connexion OTP WhatsApp (+212), JWT & Refresh Token')
+    .addTag('listings', 'Annonces, filtres & règle anti-doublon B2')
+    .addTag('cities', 'Villes marocaines')
+    .addTag('offers', 'Offres multi-objets avec soulte & contre-offres')
+    .addTag('messages', 'Messagerie temps réel (REST + Socket.IO)')
+    .addTag('notifications', 'Notifications in-app et push FCM')
+    .addTag('meetings', 'Rendez-vous, QR codes HMAC, double scan & expiration +2h')
+    .addTag('reviews', 'Avis mutuels à l\'aveugle & score de confiance')
+    .addTag('reports', 'Signalements & modération')
+    .addTag('admin', 'Statistiques back-office')
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document);
+
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port);
+  console.log(`Trocly API listening on http://localhost:${port}`);
+  console.log(`OpenAPI docs available at http://localhost:${port}/api/docs`);
 }
 bootstrap();
