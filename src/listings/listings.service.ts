@@ -1,4 +1,10 @@
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  ForbiddenException,
+  ConflictException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Between } from 'typeorm';
 import { Listing, ListingStatus } from './listing.entity';
@@ -15,6 +21,7 @@ export class ListingsService {
 
   /**
    * B1 - Create a new listing
+   * B2 - Uniqueness of active listing characteristics
    */
   async createListing(
     userId: string,
@@ -38,13 +45,32 @@ export class ListingsService {
     if (!city) throw new BadRequestException('City not found');
 
     // Validate required fields
-    if (!data.title || !data.category || !data.condition || data.estimatedValue <= 0) {
-      throw new BadRequestException('Missing required fields');
+    if (!data.title || !data.category || !data.condition || data.estimatedValue === undefined || data.estimatedValue < 0) {
+      throw new BadRequestException('Missing or invalid required fields');
+    }
+
+    // B2: Check uniqueness of active listing characteristics for this user
+    const existingDuplicate = await this.listingRepo.findOne({
+      where: {
+        user: { id: userId },
+        title: data.title.trim(),
+        category: data.category,
+        condition: data.condition,
+        estimatedValue: data.estimatedValue,
+        city: { id: data.cityId },
+        status: ListingStatus.ACTIVE,
+      },
+    });
+
+    if (existingDuplicate) {
+      throw new ConflictException(
+        'Vous possédez déjà une annonce active avec exactement les mêmes caractéristiques (titre, catégorie, état, valeur et ville).',
+      );
     }
 
     // Create listing
     const listing = this.listingRepo.create({
-      title: data.title,
+      title: data.title.trim(),
       description: data.description || '',
       category: data.category,
       condition: data.condition,
@@ -61,7 +87,7 @@ export class ListingsService {
 
   /**
    * A1 / B4 - Get listings with filters
-   * Filters: cityId, category, condition, minValue, maxValue
+   * Filters: cityId, category, condition, minValue, maxValue, search
    * Pagination: page, limit
    */
   async getListings(
@@ -84,7 +110,7 @@ export class ListingsService {
     const skip = (page - 1) * limit;
 
     const where: any = {
-      status: filters?.status || ListingStatus.ACTIVE, // Only return active listings by default
+      status: filters?.status || ListingStatus.ACTIVE,
     };
 
     // City filter
@@ -163,13 +189,13 @@ export class ListingsService {
     }
 
     // Update fields
-    if (data.title) listing.title = data.title;
-    if (data.description) listing.description = data.description;
-    if (data.category) listing.category = data.category;
-    if (data.condition) listing.condition = data.condition;
-    if (data.estimatedValue) listing.estimatedValue = data.estimatedValue;
-    if (data.photos) listing.photos = data.photos;
-    if (data.attributes) listing.attributes = { ...listing.attributes, ...data.attributes };
+    if (data.title !== undefined) listing.title = data.title;
+    if (data.description !== undefined) listing.description = data.description;
+    if (data.category !== undefined) listing.category = data.category;
+    if (data.condition !== undefined) listing.condition = data.condition;
+    if (data.estimatedValue !== undefined) listing.estimatedValue = data.estimatedValue;
+    if (data.photos !== undefined) listing.photos = data.photos;
+    if (data.attributes !== undefined) listing.attributes = { ...listing.attributes, ...data.attributes };
 
     return await this.listingRepo.save(listing);
   }
@@ -212,11 +238,11 @@ export class ListingsService {
   /**
    * Get user's own listings
    */
-  async getUserListings(userId: string, includeArchived = false): Promise<Listing[]> {
+  async getUserListings(userId: string, status?: ListingStatus): Promise<Listing[]> {
     const where: any = { user: { id: userId } };
 
-    if (!includeArchived) {
-      where.status = ListingStatus.ACTIVE;
+    if (status) {
+      where.status = status;
     }
 
     return await this.listingRepo.find({
@@ -230,19 +256,31 @@ export class ListingsService {
    * Get categories (for dropdown filters)
    */
   async getCategories(): Promise<string[]> {
+    const defaultCategories = [
+      'Électronique',
+      'Maison',
+      'Véhicules',
+      'Vêtements',
+      'Sport',
+      'Livres',
+      'Bricolage',
+    ];
     const listings = await this.listingRepo.find({
       select: { category: true },
     });
-    return listings.map(l => l.category).filter(Boolean);
+    const foundCategories = listings.map(l => l.category).filter(Boolean);
+    return Array.from(new Set([...defaultCategories, ...foundCategories]));
   }
 
   /**
    * Get conditions (for dropdown filters)
    */
   async getConditions(): Promise<string[]> {
+    const defaultConditions = ['neuf', 'comme_neuf', 'tres_bon', 'bon', 'use'];
     const listings = await this.listingRepo.find({
       select: { condition: true },
     });
-    return listings.map(l => l.condition).filter(Boolean);
+    const found = listings.map(l => l.condition).filter(Boolean);
+    return Array.from(new Set([...defaultConditions, ...found]));
   }
 }

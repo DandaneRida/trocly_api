@@ -13,9 +13,7 @@ import {
 } from '@nestjs/common';
 import { ListingsService } from './listings.service';
 import { ListingStatus } from './listing.entity';
-
-// TODO: Implement JWT Guard
-// For now, we'll extract userId from query/header
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('listings')
 export class ListingsController {
@@ -43,7 +41,7 @@ export class ListingsController {
       minValue: minValue ? parseFloat(minValue) : undefined,
       maxValue: maxValue ? parseFloat(maxValue) : undefined,
       search,
-      status: 'active' as ListingStatus,
+      status: ListingStatus.ACTIVE,
     };
 
     const pagination = {
@@ -52,122 +50,6 @@ export class ListingsController {
     };
 
     return this.listingsService.getListings(filters, pagination);
-  }
-
-  /**
-   * Get single listing details
-   * GET /listings/:id
-   */
-  @Get(':id')
-  async getListingDetail(@Param('id') listingId: string) {
-    return this.listingsService.getListingById(listingId);
-  }
-
-  /**
-   * B1 - Create a new listing (authenticated)
-   * POST /listings
-   * Header: Authorization: Bearer <token>
-   * Body: { title, description?, category, condition, estimatedValue, cityId, photos?, attributes? }
-   */
-  @Post()
-  async createListing(
-    @Body()
-    body: {
-      title: string;
-      description?: string;
-      category: string;
-      condition: string;
-      estimatedValue: number;
-      cityId: number;
-      photos?: string[];
-      attributes?: Record<string, any>;
-    },
-    @Query('userId') userId?: string, // TODO: Get from JWT
-  ) {
-    if (!userId) {
-      throw new BadRequestException('Must be authenticated (userId required)');
-    }
-
-    return this.listingsService.createListing(userId, body);
-  }
-
-  /**
-   * B3 - Update listing (owner only)
-   * PATCH /listings/:id
-   */
-  @Patch(':id')
-  async updateListing(
-    @Param('id') listingId: string,
-    @Body()
-    body: Partial<{
-      title: string;
-      description: string;
-      category: string;
-      condition: string;
-      estimatedValue: number;
-      photos: string[];
-      attributes: Record<string, any>;
-    }>,
-    @Query('userId') userId?: string, // TODO: Get from JWT
-  ) {
-    if (!userId) {
-      throw new BadRequestException('Must be authenticated');
-    }
-
-    return this.listingsService.updateListing(listingId, userId, body);
-  }
-
-  /**
-   * B3 - Change listing status (owner only)
-   * PATCH /listings/:id/status
-   */
-  @Patch(':id/status')
-  async changeStatus(
-    @Param('id') listingId: string,
-    @Body('status') status: ListingStatus,
-    @Query('userId') userId?: string, // TODO: Get from JWT
-  ) {
-    if (!userId) {
-      throw new BadRequestException('Must be authenticated');
-    }
-
-    if (!Object.values(ListingStatus).includes(status)) {
-      throw new BadRequestException('Invalid status');
-    }
-
-    return this.listingsService.changeListingStatus(listingId, userId, status);
-  }
-
-  /**
-   * B3 - Delete listing (owner only)
-   * DELETE /listings/:id
-   */
-  @Delete(':id')
-  async deleteListing(
-    @Param('id') listingId: string,
-    @Query('userId') userId?: string, // TODO: Get from JWT
-  ) {
-    if (!userId) {
-      throw new BadRequestException('Must be authenticated');
-    }
-
-    return this.listingsService.deleteListing(listingId, userId);
-  }
-
-  /**
-   * Get user's own listings
-   * GET /listings/user/my-listings
-   */
-  @Get('user/my-listings')
-  async getUserListings(
-    @Query('userId') userId?: string, // TODO: Get from JWT
-    @Query('includeArchived') includeArchived?: string,
-  ) {
-    if (!userId) {
-      throw new BadRequestException('Must be authenticated');
-    }
-
-    return this.listingsService.getUserListings(userId, includeArchived === 'true');
   }
 
   /**
@@ -186,5 +68,128 @@ export class ListingsController {
   @Get('meta/conditions')
   async getConditions() {
     return this.listingsService.getConditions();
+  }
+
+  /**
+   * Get user's own listings (authenticated)
+   * GET /listings/user/my-listings?status=active
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('user/my-listings')
+  async getUserListings(
+    @Request() req: any,
+    @Query('status') status?: ListingStatus,
+  ) {
+    const userId = req.user?.sub;
+    if (!userId) {
+      throw new BadRequestException('User identification missing from token');
+    }
+
+    return this.listingsService.getUserListings(userId, status);
+  }
+
+  /**
+   * Get single listing details
+   * GET /listings/:id
+   */
+  @Get(':id')
+  async getListingDetail(@Param('id') listingId: string) {
+    return this.listingsService.getListingById(listingId);
+  }
+
+  /**
+   * B1 - Create a new listing (authenticated)
+   * POST /listings
+   * Header: Authorization: Bearer <token>
+   * Body: { title, description?, category, condition, estimatedValue, cityId, photos?, attributes? }
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post()
+  async createListing(
+    @Request() req: any,
+    @Body()
+    body: {
+      title: string;
+      description?: string;
+      category: string;
+      condition: string;
+      estimatedValue: number;
+      cityId: number;
+      photos?: string[];
+      attributes?: Record<string, any>;
+    },
+  ) {
+    const userId = req.user?.sub;
+    if (!userId) {
+      throw new BadRequestException('User identification missing from token');
+    }
+
+    return this.listingsService.createListing(userId, body);
+  }
+
+  /**
+   * B3 - Change listing status (owner only)
+   * PATCH /listings/:id/status
+   */
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/status')
+  async changeStatus(
+    @Request() req: any,
+    @Param('id') listingId: string,
+    @Body('status') status: ListingStatus,
+  ) {
+    const userId = req.user?.sub;
+    if (!userId) {
+      throw new BadRequestException('User identification missing from token');
+    }
+
+    if (!Object.values(ListingStatus).includes(status)) {
+      throw new BadRequestException('Invalid status');
+    }
+
+    return this.listingsService.changeListingStatus(listingId, userId, status);
+  }
+
+  /**
+   * B3 - Update listing (owner only)
+   * PATCH /listings/:id
+   */
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id')
+  async updateListing(
+    @Request() req: any,
+    @Param('id') listingId: string,
+    @Body()
+    body: Partial<{
+      title: string;
+      description: string;
+      category: string;
+      condition: string;
+      estimatedValue: number;
+      photos: string[];
+      attributes: Record<string, any>;
+    }>,
+  ) {
+    const userId = req.user?.sub;
+    if (!userId) {
+      throw new BadRequestException('User identification missing from token');
+    }
+
+    return this.listingsService.updateListing(listingId, userId, body);
+  }
+
+  /**
+   * B3 - Delete listing (owner only)
+   * DELETE /listings/:id
+   */
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id')
+  async deleteListing(@Request() req: any, @Param('id') listingId: string) {
+    const userId = req.user?.sub;
+    if (!userId) {
+      throw new BadRequestException('User identification missing from token');
+    }
+
+    return this.listingsService.deleteListing(listingId, userId);
   }
 }
