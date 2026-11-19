@@ -181,7 +181,7 @@ export class MeetingsService implements OnModuleInit {
   }
 
   /**
-   * D2 - Accept meeting (to be enhanced on D2 branch)
+   * D2 - Accept a proposed meeting and generate signed QR payloads for both participants
    */
   async acceptMeeting(meetingId: string, userId: string): Promise<Meeting> {
     const meeting = await this.meetingRepo.findOne({
@@ -194,6 +194,16 @@ export class MeetingsService implements OnModuleInit {
       meeting.responder?.id !== userId
     ) {
       throw new ForbiddenException('Accès refusé à ce rendez-vous');
+    }
+    if (meeting.expiresAt && new Date() > meeting.expiresAt) {
+      meeting.status = MeetingStatus.EXPIRED;
+      await this.meetingRepo.save(meeting);
+      throw new BadRequestException('Ce rendez-vous a expiré');
+    }
+    if (meeting.status !== MeetingStatus.PROPOSED) {
+      throw new BadRequestException(
+        `Impossible d'accepter un rendez-vous au statut "${meeting.status}"`,
+      );
     }
 
     meeting.status = MeetingStatus.ACCEPTED;
@@ -208,7 +218,23 @@ export class MeetingsService implements OnModuleInit {
       meeting.expiresAt,
     );
 
-    return this.meetingRepo.save(meeting);
+    const saved = await this.meetingRepo.save(meeting);
+
+    const otherId =
+      meeting.initiator.id === userId
+        ? meeting.responder.id
+        : meeting.initiator.id;
+    this.notificationsService
+      .notifyUser(
+        otherId,
+        NotificationType.MEETING_ACCEPTED,
+        'Rendez-vous confirmé — QR prêts',
+        `Vos QR codes pour "${meeting.proposedLocation}" sont disponibles.`,
+        { meetingId: saved.id, route: `/my-qr/${saved.id}` },
+      )
+      .catch(() => {});
+
+    return saved;
   }
 
   async scanQRCode(payload: string, scannedByUserId: string): Promise<any> {
