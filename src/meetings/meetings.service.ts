@@ -4,9 +4,11 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { DataSource, In, LessThan, Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import { Meeting, MeetingStatus } from './meeting.entity';
 import { Offer } from '../offers/offer.entity';
@@ -16,6 +18,7 @@ import { NotificationType } from '../notifications/notification.entity';
 
 @Injectable()
 export class MeetingsService implements OnModuleInit {
+  private readonly logger = new Logger(MeetingsService.name);
   private readonly QR_SECRET =
     process.env.QR_SECRET || process.env.JWT_SECRET || 'trocly-qr-secret-dev';
 
@@ -335,9 +338,57 @@ export class MeetingsService implements OnModuleInit {
   }
 
   async getMeeting(meetingId: string): Promise<Meeting | null> {
-    return this.meetingRepo.findOne({
+    const meeting = await this.meetingRepo.findOne({
       where: { id: meetingId },
       relations: { initiator: true, responder: true },
     });
+    if (
+      meeting &&
+      (meeting.status === MeetingStatus.PROPOSED ||
+        meeting.status === MeetingStatus.ACCEPTED) &&
+      meeting.expiresAt &&
+      new Date() > meeting.expiresAt
+    ) {
+      meeting.status = MeetingStatus.EXPIRED;
+      await this.meetingRepo.save(meeting);
+    }
+    return meeting;
+  }
+
+  /**
+   * D4 - Automatic expiration of overdue meetings (scheduledAt + 2h)
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async expireOverdueMeetings(): Promise<number> {
+    const now = new Date();
+    const overdue = await this.meetingRepo.find({
+      where: {
+        status: In([MeetingStatus.PROPOSED, MeetingStatus.ACCEPTED]),
+        expiresAt: LessThan(now),
+      },
+      relations: { initiator: true, responder: true },
+    });
+
+    if (overdue.length === 0) return 0;
+
+    for (const m of overdue) {
+      m.status = MeetingStatus.EXPIRED;
+      await this.meetingRepo.save(m);
+
+      for (const uid of [m.initiator?.id, m.responder?.id].filter(Boolean)) {
+        this.notificationsService
+          .notifyUser(
+            uid!,
+            NotificationType.MEETING_EXPIRED,
+            'Rendez-vous expiré',
+            `Le créneau pour "${m.proposedLocation}" est dépassé de plus de 2 h.`,
+            { meetingId: m.id, route: `/my-qr/${m.id}` },
+          )
+          .catch(() => {});
+      }
+    }
+
+    this.logger.log(`Expired ${overdue.length} overdue meeting(s)`);
+    return overdue.length;
   }
 }
