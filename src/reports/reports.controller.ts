@@ -6,19 +6,22 @@ import {
   Param,
   Body,
   Query,
+  UseGuards,
+  Request,
   BadRequestException,
 } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { ReportType, ReportStatus } from './report.entity';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('reports')
+@UseGuards(JwtAuthGuard)
 export class ReportsController {
   constructor(private reportsService: ReportsService) {}
 
   /**
-   * E2 - Report a user or listing
+   * E2 - Report a user or listing (JWT authenticated)
    * POST /reports
-   * Body: { reportedUserId?, reportedListingId?, reportType, description? }
    */
   @Post()
   async createReport(
@@ -29,14 +32,13 @@ export class ReportsController {
       reportType: ReportType;
       description?: string;
     },
-    @Query('reporterId') reporterId?: string,
+    @Request() req: any,
   ) {
-    if (!reporterId) throw new BadRequestException('reporterId required');
-    return this.reportsService.createReport(reporterId, body);
+    return this.reportsService.createReport(req.user.sub, body);
   }
 
   /**
-   * Get all reports (admin only)
+   * E3 - Get all reports (moderation)
    * GET /reports?status=pending&limit=50
    */
   @Get()
@@ -44,22 +46,17 @@ export class ReportsController {
     @Query('status') status?: ReportStatus,
     @Query('limit') limit?: string,
   ) {
-    return this.reportsService.getAllReports(status, limit ? parseInt(limit) : 50);
+    return this.reportsService.getAllReports(
+      status,
+      limit ? parseInt(limit, 10) : 50,
+    );
   }
 
-  /**
-   * Get reports for a user (admin)
-   * GET /reports/user/:userId
-   */
   @Get('user/:userId')
   async getUserReports(@Param('userId') userId: string) {
     return this.reportsService.getUserReports(userId);
   }
 
-  /**
-   * Get reports for a listing (admin)
-   * GET /reports/listing/:listingId
-   */
   @Get('listing/:listingId')
   async getListingReports(@Param('listingId') listingId: string) {
     return this.reportsService.getListingReports(listingId);
@@ -67,7 +64,6 @@ export class ReportsController {
 
   /**
    * E3 - Update report status (admin moderation)
-   * PATCH /reports/:id/status
    */
   @Patch(':id/status')
   async updateReportStatus(
@@ -76,26 +72,27 @@ export class ReportsController {
     @Body('adminNotes') adminNotes?: string,
   ) {
     if (!Object.values(ReportStatus).includes(status)) {
-      throw new BadRequestException('Invalid status');
+      throw new BadRequestException('Statut invalide');
     }
     return this.reportsService.updateReportStatus(reportId, status, adminNotes);
   }
 
   /**
    * E3 - Suspend user (admin moderation)
-   * POST /reports/admin/suspend/:userId
    */
   @Post('admin/suspend/:userId')
   async suspendUser(
     @Param('userId') userId: string,
     @Body('reason') reason?: string,
   ) {
-    return this.reportsService.suspendUser(userId, reason || 'Policy violation');
+    return this.reportsService.suspendUser(
+      userId,
+      reason || 'Violation des règles Trocly',
+    );
   }
 
   /**
    * E3 - Reactivate user (admin)
-   * POST /reports/admin/reactivate/:userId
    */
   @Post('admin/reactivate/:userId')
   async reactivateUser(@Param('userId') userId: string) {
@@ -103,8 +100,7 @@ export class ReportsController {
   }
 
   /**
-   * E4 - Get report statistics (admin dashboard)
-   * GET /reports/admin/stats
+   * E4 - Get report statistics
    */
   @Get('admin/stats')
   async getReportStats() {
