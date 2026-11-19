@@ -1,4 +1,11 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  CreateDateColumn,
+} from 'typeorm';
 import { User } from '../users/user.entity';
 import { Meeting } from '../meetings/meeting.entity';
 
@@ -20,10 +27,16 @@ export class Review {
   reviewee: User;
 
   @Column({ type: 'int', default: 5 })
-  rating: number; // 1-5 stars
+  rating: number;
 
   @Column({ nullable: true })
   comment: string;
+
+  @Column({ type: 'jsonb', nullable: true })
+  tags: string[] | null;
+
+  @Column({ name: 'is_revealed', type: 'boolean', default: false })
+  isRevealed: boolean;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

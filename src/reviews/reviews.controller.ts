@@ -4,40 +4,41 @@ import {
   Post,
   Param,
   Body,
-  Query,
-  BadRequestException,
+  UseGuards,
+  Request,
 } from '@nestjs/common';
 import { ReviewsService } from './reviews.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('reviews')
 export class ReviewsController {
   constructor(private reviewsService: ReviewsService) {}
 
   /**
-   * D5 - Post a review after QR validation
+   * D5 - Post a mutual review after double-scan QR validation
    * POST /reviews
-   * Body: { meetingId, rating: 1-5, comment? }
    */
   @Post()
+  @UseGuards(JwtAuthGuard)
   async createReview(
     @Body()
     body: {
       meetingId: string;
       rating: number;
       comment?: string;
+      tags?: string[];
     },
-    @Query('reviewerId') reviewerId?: string, // TODO: Get from JWT
+    @Request() req: any,
   ) {
-    if (!reviewerId) throw new BadRequestException('reviewerId required');
-
-    return this.reviewsService.createReview(reviewerId, body.meetingId, {
+    return this.reviewsService.createReview(body.meetingId, req.user.sub, {
       rating: body.rating,
       comment: body.comment,
+      tags: body.tags,
     });
   }
 
   /**
-   * Get reviews received by user
+   * Get visible reviews received by a user
    * GET /reviews/user/:userId/received
    */
   @Get('user/:userId/received')
@@ -46,7 +47,7 @@ export class ReviewsController {
   }
 
   /**
-   * Get reviews given by user
+   * Get reviews given by a user
    * GET /reviews/user/:userId/given
    */
   @Get('user/:userId/given')
@@ -55,7 +56,7 @@ export class ReviewsController {
   }
 
   /**
-   * E1 - Get user statistics (trust score)
+   * E1 - Get user trust score & review stats
    * GET /reviews/user/:userId/stats
    */
   @Get('user/:userId/stats')
@@ -64,15 +65,15 @@ export class ReviewsController {
   }
 
   /**
-   * Get review for a specific meeting
+   * Get authenticated user's review for a specific meeting
    * GET /reviews/meeting/:meetingId
    */
   @Get('meeting/:meetingId')
+  @UseGuards(JwtAuthGuard)
   async getMeetingReview(
     @Param('meetingId') meetingId: string,
-    @Query('reviewerId') reviewerId?: string,
+    @Request() req: any,
   ) {
-    if (!reviewerId) throw new BadRequestException('reviewerId required');
-    return this.reviewsService.getReviewForMeeting(meetingId, reviewerId);
+    return this.reviewsService.getReviewForMeeting(meetingId, req.user.sub);
   }
 }
