@@ -1,20 +1,44 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: trocly-postgres
+    container_name: trocly_postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: troc
-      POSTGRES_PASSWORD: troc
-      POSTGRES_DB: trocly_db
+      POSTGRES_USER: ${DB_USERNAME:-troc}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-troc}
+      POSTGRES_DB: ${DB_NAME:-trocly_db}
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
-      - pgdata_new:/var/lib/postgresql/data
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-  redis:
-    image: redis:7-alpine
-    container_name: trocly-redis
+      - trocly_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-troc} -d ${DB_NAME:-trocly_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    container_name: trocly_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
-      - "6379:6379"
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME:-troc}
+      DB_PASSWORD: ${DB_PASSWORD:-troc}
+      DB_NAME: ${DB_NAME:-trocly_db}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      QR_SECRET: ${QR_SECRET:-change-qr-secret-in-production}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON:-}
+    volumes:
+      - trocly_uploads:/app/uploads
+
 volumes:
-  pgdata_new:
+  trocly_pgdata:
+  trocly_uploads:
