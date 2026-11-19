@@ -15,6 +15,7 @@ import { ReportsModule } from './reports/reports.module';
 import { MessagesModule } from './messages/messages.module';
 import { AdminModule } from './admin/admin.module';
 import { UploadModule } from './upload/upload.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { UploadModule } from './upload/upload.module';
     MessagesModule,
     AdminModule,
     UploadModule,
+    NotificationsModule,
   ],
   controllers: [HealthController],
   providers: [AppService],
