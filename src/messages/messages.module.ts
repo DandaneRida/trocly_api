@@ -6,9 +6,10 @@ import { MessagesController } from './messages.controller';
 import { ChatGateway } from './chat.gateway';
 import { Offer } from '../offers/offer.entity';
 import { User } from '../users/user.entity';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Message, Offer, User])],
+  imports: [TypeOrmModule.forFeature([Message, Offer, User]), AuthModule],
   providers: [MessagesService, ChatGateway],
   controllers: [MessagesController],
   exports: [MessagesService, ChatGateway],
