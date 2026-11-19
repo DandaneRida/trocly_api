@@ -1,12 +1,24 @@
-import { Controller, Post, Get, Param, Body, BadRequestException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Param,
+  Body,
+  UseGuards,
+  Request,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('meetings')
+@UseGuards(JwtAuthGuard)
 export class MeetingsController {
   constructor(private meetingsService: MeetingsService) {}
 
   /**
-   * Create a meeting (after offer accepted)
+   * D1 - Propose a meeting (place + time slot)
    * POST /meetings
    */
   @Post()
@@ -14,43 +26,63 @@ export class MeetingsController {
     @Body()
     body: {
       offerId: string;
-      initiatorId: string;
-      responderId: string;
+      responderId?: string;
       proposedLocation: string;
       scheduledAt: string;
     },
+    @Request() req: any,
   ) {
-    return await this.meetingsService.createMeeting(
+    if (!body.offerId || !body.proposedLocation || !body.scheduledAt) {
+      throw new BadRequestException(
+        'offerId, proposedLocation et scheduledAt sont requis',
+      );
+    }
+    return this.meetingsService.createMeeting(
       body.offerId,
-      body.initiatorId,
-      body.responderId,
+      req.user.sub,
       body.proposedLocation,
       new Date(body.scheduledAt),
+      body.responderId,
     );
   }
 
   /**
-   * Accept a proposed meeting and get QR codes
-   * POST /meetings/:id/accept
+   * List authenticated user's meetings
+   * GET /meetings/my-meetings
    */
-  @Post(':id/accept')
-  async acceptMeeting(@Param('id') meetingId: string) {
-    return await this.meetingsService.acceptMeeting(meetingId);
+  @Get('my-meetings')
+  async getMyMeetings(@Request() req: any) {
+    return this.meetingsService.getMyMeetings(req.user.sub);
   }
 
   /**
-   * SINGLE-SCAN QR code validation endpoint
-   * One scan validates the entire meeting
+   * List meetings for an offer
+   * GET /meetings/offer/:offerId
+   */
+  @Get('offer/:offerId')
+  async getOfferMeetings(@Param('offerId') offerId: string, @Request() req: any) {
+    return this.meetingsService.getMeetingsByOffer(offerId, req.user.sub);
+  }
+
+  /**
+   * D2 - Accept a proposed meeting and generate QR payloads
+   * POST /meetings/:id/accept
+   */
+  @Post(':id/accept')
+  async acceptMeeting(@Param('id') meetingId: string, @Request() req: any) {
+    return this.meetingsService.acceptMeeting(meetingId, req.user.sub);
+  }
+
+  /**
+   * D3 - Scan partner QR code
    * POST /meetings/qr/scan
    */
   @Post('qr/scan')
-  async scanQRCode(
-    @Body() body: { payload: string; scannedByUserId: string },
-  ) {
-    if (!body.payload || !body.scannedByUserId) {
-      throw new BadRequestException('Missing payload or scannedByUserId');
+  async scanQRCode(@Body() body: { payload: string }, @Request() req: any) {
+    if (!body?.payload) {
+      throw new BadRequestException('payload QR requis');
     }
-    return await this.meetingsService.scanQRCode(body.payload, body.scannedByUserId);
+    return this.meetingsService.scanQRCode(body.payload, req.user.sub);
   }
 
   /**
@@ -60,7 +92,7 @@ export class MeetingsController {
   @Get(':id')
   async getMeeting(@Param('id') meetingId: string) {
     const meeting = await this.meetingsService.getMeeting(meetingId);
-    if (!meeting) throw new BadRequestException('Meeting not found');
+    if (!meeting) throw new NotFoundException('Rendez-vous introuvable');
     return meeting;
   }
 }
