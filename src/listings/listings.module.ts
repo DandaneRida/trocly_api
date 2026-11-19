@@ -5,9 +5,13 @@ import { ListingsService } from './listings.service';
 import { ListingsController } from './listings.controller';
 import { User } from '../users/user.entity';
 import { City } from '../cities/city.entity';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Listing, User, City])],
+  imports: [
+    TypeOrmModule.forFeature([Listing, User, City]),
+    AuthModule,
+  ],
   providers: [ListingsService],
   controllers: [ListingsController],
   exports: [ListingsService],
