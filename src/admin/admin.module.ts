@@ -8,9 +8,13 @@ import { Offer } from '../offers/offer.entity';
 import { Meeting } from '../meetings/meeting.entity';
 import { Review } from '../reviews/review.entity';
 import { Report } from '../reports/report.entity';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Listing, Offer, Meeting, Review, Report])],
+  imports: [
+    TypeOrmModule.forFeature([User, Listing, Offer, Meeting, Review, Report]),
+    AuthModule,
+  ],
   providers: [AdminService],
   controllers: [AdminController],
   exports: [AdminService],
