@@ -7,16 +7,22 @@ import { UploadController } from './upload.controller';
 @Module({
   imports: [
     MulterModule.register({
-      storage: memoryStorage(), // Store files in memory for Firebase direct upload
+      storage: memoryStorage(),
       limits: {
-        fileSize: 5 * 1024 * 1024, // 5MB max
+        fileSize: 10 * 1024 * 1024, // 10MB max
       },
       fileFilter: (req, file, callback) => {
-        const allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
-        if (allowedMimes.includes(file.mimetype)) {
+        const mime = (file.mimetype || '').toLowerCase();
+        const originalName = (file.originalname || '').toLowerCase();
+
+        // Accepter si le mime commence par image/ ou si l'extension est une image valide
+        const isImageMime = mime.startsWith('image/');
+        const isImageExt = /\.(jpg|jpeg|png|webp|gif|bmp|jfif)$/i.test(originalName);
+
+        if (isImageMime || isImageExt || mime === 'application/octet-stream') {
           callback(null, true);
         } else {
-          callback(new Error('Invalid file type'), false);
+          callback(new Error('Format de fichier non supporté (images uniquement)'), false);
         }
       },
     }),

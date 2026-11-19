@@ -28,19 +28,13 @@ export class UploadService {
       throw new BadRequestException('No file provided');
     }
 
-    // Validate file type
-    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
-    if (!allowedMimes.includes(file.mimetype)) {
-      throw new BadRequestException('Only JPEG, PNG, and WebP images allowed');
-    }
-
-    // Validate file size (max 5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      throw new BadRequestException('Image size must be under 5MB');
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      throw new BadRequestException('Image size must be under 10MB');
     }
 
     try {
-      // Compress and optimize image
+      // Compress and optimize image using sharp
       const optimized = await sharp(file.buffer)
         .resize(1200, 1200, {
           fit: 'inside',
@@ -88,11 +82,7 @@ export class UploadService {
     listingId: string,
   ): Promise<{ urls: string[]; filenames: string[] }> {
     if (!files || files.length === 0) {
-      throw new BadRequestException('No files provided');
-    }
-
-    if (files.length > 10) {
-      throw new BadRequestException('Maximum 10 images per listing');
+      throw new BadRequestException('At least one image required');
     }
 
     const uploadPromises = files.map(file =>
@@ -129,24 +119,20 @@ export class UploadService {
   async deleteListingImages(listingId: string): Promise<{ message: string }> {
     try {
       const listingDir = path.join(this.uploadDir, `*/${listingId}`);
-      // Find and delete all files for this listing
       const dir = path.dirname(listingDir);
       if (fs.existsSync(dir)) {
         const files = fs.readdirSync(dir);
-        let deletedCount = 0;
         for (const file of files) {
           const filePath = path.join(dir, file);
           if (fs.statSync(filePath).isFile()) {
             fs.unlinkSync(filePath);
-            deletedCount++;
           }
         }
-        return { message: `${deletedCount} images deleted` };
       }
-      return { message: '0 images found' };
+      return { message: 'All listing images deleted successfully' };
     } catch (error) {
-      console.error('Batch delete error:', error);
-      throw new BadRequestException(`Failed to delete images: ${(error as any).message || error}`);
+      console.error('Delete error:', error);
+      throw new BadRequestException(`Failed to delete listing images: ${(error as any).message || error}`);
     }
   }
 }
