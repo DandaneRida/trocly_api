@@ -9,6 +9,8 @@ import { IsNull, Not, Repository } from 'typeorm';
 import { Message } from './message.entity';
 import { Offer } from '../offers/offer.entity';
 import { User } from '../users/user.entity';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/notification.entity';
 
 @Injectable()
 export class MessagesService {
@@ -16,6 +18,7 @@ export class MessagesService {
     @InjectRepository(Message) private messageRepo: Repository<Message>,
     @InjectRepository(Offer) private offerRepo: Repository<Offer>,
     @InjectRepository(User) private userRepo: Repository<User>,
+    private notificationsService: NotificationsService,
   ) {}
 
   async verifyParticipant(offerId: string, userId: string): Promise<Offer> {
@@ -42,7 +45,7 @@ export class MessagesService {
     senderId: string,
     content: string,
   ): Promise<Message> {
-    await this.verifyParticipant(offerId, senderId);
+    const offer = await this.verifyParticipant(offerId, senderId);
 
     if (!content || content.trim().length === 0) {
       throw new BadRequestException('Le message ne peut pas être vide');
@@ -59,6 +62,23 @@ export class MessagesService {
       where: { id: saved.id },
       relations: { sender: true, offer: true },
     });
+
+    // C5: notify recipient in background
+    const recipientId =
+      offer.initiator?.id === senderId ? offer.responder?.id : offer.initiator?.id;
+    if (recipientId) {
+      const senderName = full?.sender?.displayName || 'Un membre';
+      this.notificationsService
+        .notifyUser(
+          recipientId,
+          NotificationType.NEW_MESSAGE,
+          `Nouveau message de ${senderName}`,
+          content.trim().slice(0, 120),
+          { offerId, route: `/chat/${offerId}` },
+        )
+        .catch(() => {});
+    }
+
     return full || saved;
   }
 
