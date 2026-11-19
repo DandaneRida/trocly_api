@@ -1,11 +1,20 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { User } from '../users/user.entity';
 
 export enum MeetingStatus {
   PROPOSED = 'proposed',
   ACCEPTED = 'accepted',
-  VALIDATED = 'validated', // Changed: only ONE scan needed (single participant scan validates)
+  VALIDATED = 'validated',
   CANCELLED = 'cancelled',
+  EXPIRED = 'expired',
   COMPLETED = 'completed',
 }
 
@@ -14,8 +23,8 @@ export class Meeting {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column()
-  offerId: string; // Foreign key to Offer
+  @Column({ name: 'offer_id' })
+  offerId: string;
 
   @ManyToOne(() => User)
   @JoinColumn({ name: 'initiator_id' })
@@ -32,7 +41,7 @@ export class Meeting {
   scheduledAt: Date;
 
   @Column({ name: 'expires_at', type: 'timestamptz' })
-  expiresAt: Date; // scheduledAt + 2 hours
+  expiresAt: Date; // scheduledAt + 2 hours (D4)
 
   @Column({
     type: 'enum',
@@ -42,16 +51,22 @@ export class Meeting {
   status: MeetingStatus;
 
   @Column({ name: 'qr_payload_initiator', nullable: true })
-  qrPayloadInitiator: string; // Signed QR data (meetingId + userId + expiration)
+  qrPayloadInitiator: string;
 
   @Column({ name: 'qr_payload_responder', nullable: true })
-  qrPayloadResponder: string; // Signed QR data
+  qrPayloadResponder: string;
+
+  @Column({ name: 'initiator_scanned_at', type: 'timestamptz', nullable: true })
+  initiatorScannedAt: Date;
+
+  @Column({ name: 'responder_scanned_at', type: 'timestamptz', nullable: true })
+  responderScannedAt: Date;
 
   @Column({ name: 'scanned_at', type: 'timestamptz', nullable: true })
-  scannedAt: Date; // CHANGED: single scan time (not two scans)
+  scannedAt: Date;
 
   @Column({ name: 'scanned_by_id', nullable: true })
-  scannedById: string; // User who performed the single scan
+  scannedById: string;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
