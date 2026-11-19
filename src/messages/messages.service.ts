@@ -1,6 +1,11 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Not, Repository } from 'typeorm';
 import { Message } from './message.entity';
 import { Offer } from '../offers/offer.entity';
 import { User } from '../users/user.entity';
@@ -13,142 +18,218 @@ export class MessagesService {
     @InjectRepository(User) private userRepo: Repository<User>,
   ) {}
 
-  /**
-   * Create a message (persisted to database)
-   */
-  async createMessage(offerId: string, senderId: string, content: string): Promise<Message> {
-    // Validate offer exists
+  async verifyParticipant(offerId: string, userId: string): Promise<Offer> {
     const offer = await this.offerRepo.findOne({
       where: { id: offerId },
       relations: { initiator: true, responder: true },
     });
-
     if (!offer) {
-      throw new NotFoundException('Offer not found');
+      throw new NotFoundException('Offre introuvable');
     }
-
-    // Validate sender is participant
-    const isParticipant = offer.initiator.id === senderId || offer.responder.id === senderId;
+    const isParticipant =
+      offer.initiator?.id === userId || offer.responder?.id === userId;
     if (!isParticipant) {
-      throw new BadRequestException('You are not participant in this offer');
+      throw new ForbiddenException('Vous ne participez pas à cette offre');
     }
+    return offer;
+  }
 
-    // Validate content
+  /**
+   * Create a message (persisted to database)
+   */
+  async createMessage(
+    offerId: string,
+    senderId: string,
+    content: string,
+  ): Promise<Message> {
+    await this.verifyParticipant(offerId, senderId);
+
     if (!content || content.trim().length === 0) {
-      throw new BadRequestException('Message content cannot be empty');
+      throw new BadRequestException('Le message ne peut pas être vide');
     }
 
-    // Create message
     const message = this.messageRepo.create({
       offer: { id: offerId } as any,
       sender: { id: senderId } as any,
       content: content.trim(),
-      readAt: undefined,
     });
 
-    return await this.messageRepo.save(message);
+    const saved = await this.messageRepo.save(message);
+    const full = await this.messageRepo.findOne({
+      where: { id: saved.id },
+      relations: { sender: true, offer: true },
+    });
+    return full || saved;
   }
 
   /**
-   * Get all messages for an offer (chat history)
+   * Get paginated chat history for an offer
    */
-  async getOfferMessages(offerId: string): Promise<Message[]> {
+  async getOfferMessages(
+    offerId: string,
+    userId?: string,
+    page = 1,
+    limit = 50,
+  ): Promise<Message[]> {
+    if (userId) {
+      await this.verifyParticipant(offerId, userId);
+    }
+    const safeLimit = Math.min(Math.max(limit, 1), 100);
+    const safePage = Math.max(page, 1);
+
     return this.messageRepo.find({
       where: { offer: { id: offerId } },
-      relations: { sender: true, offer: true },
+      relations: { sender: true },
       order: { createdAt: 'ASC' },
-      take: 50,
+      skip: (safePage - 1) * safeLimit,
+      take: safeLimit,
     });
   }
 
   /**
-   * Get unread messages for a user
+   * Get unread messages for a user across all their offers
    */
   async getUnreadMessages(userId: string): Promise<Message[]> {
-    return this.messageRepo.find({
-      where: {
-        offer: { responder: { id: userId } },
-        readAt: undefined,
-      } as any,
-      relations: { sender: true, offer: true },
-      order: { createdAt: 'DESC' },
-    });
+    return this.messageRepo
+      .createQueryBuilder('msg')
+      .leftJoinAndSelect('msg.offer', 'offer')
+      .leftJoinAndSelect('msg.sender', 'sender')
+      .where('(offer.initiator_id = :userId OR offer.responder_id = :userId)', {
+        userId,
+      })
+      .andWhere('msg.sender_id != :userId', { userId })
+      .andWhere('msg.read_at IS NULL')
+      .orderBy('msg.created_at', 'DESC')
+      .getMany();
   }
 
   /**
-   * Mark all messages in offer as read by user
+   * Mark all messages sent by the other participant in an offer as read
    */
-  async markOfferMessagesAsRead(offerId: string, userId: string): Promise<void> {
-    const messages = await this.messageRepo.find({
+  async markOfferMessagesAsRead(offerId: string, userId: string): Promise<number> {
+    await this.verifyParticipant(offerId, userId);
+    const unread = await this.messageRepo.find({
       where: {
         offer: { id: offerId },
-        readAt: undefined,
-      } as any,
+        sender: { id: Not(userId) },
+        readAt: IsNull(),
+      },
     });
+    if (unread.length === 0) return 0;
 
-    for (const message of messages) {
-      message.readAt = new Date();
-      await this.messageRepo.save(message);
+    const now = new Date();
+    for (const msg of unread) {
+      msg.readAt = now;
     }
+    await this.messageRepo.save(unread);
+    return unread.length;
   }
 
   /**
    * Get unread count for user
    */
   async getUnreadCount(userId: string): Promise<number> {
-    return this.messageRepo.count({
-      where: {
-        offer: { responder: { id: userId } },
-        readAt: undefined,
-      } as any,
-    });
+    return this.messageRepo
+      .createQueryBuilder('msg')
+      .leftJoin('msg.offer', 'offer')
+      .where('(offer.initiator_id = :userId OR offer.responder_id = :userId)', {
+        userId,
+      })
+      .andWhere('msg.sender_id != :userId', { userId })
+      .andWhere('msg.read_at IS NULL')
+      .getCount();
   }
 
   /**
-   * Get recent conversations (offers with messages)
+   * Get recent conversations (all offers where user participates, enriched with last message & unread count)
    */
-  async getRecentConversations(userId: string, limit = 10): Promise<any[]> {
-    const messages = await this.messageRepo
-      .createQueryBuilder('msg')
-      .leftJoinAndSelect('msg.offer', 'offer')
-      .leftJoinAndSelect('msg.sender', 'sender')
-      .where(
-        '(offer.initiator_id = :userId OR offer.responder_id = :userId)',
-        { userId },
-      )
-      .orderBy('msg.created_at', 'DESC')
-      .distinct(true)
-      .limit(limit)
-      .getMany();
+  async getRecentConversations(userId: string, limit = 30): Promise<any[]> {
+    const offers = await this.offerRepo.find({
+      where: [
+        { initiator: { id: userId } },
+        { responder: { id: userId } },
+      ],
+      relations: {
+        initiator: true,
+        responder: true,
+        items: { listing: true },
+      },
+      order: { updatedAt: 'DESC' },
+      take: limit,
+    });
 
-    const conversationMap = new Map();
-    for (const msg of messages) {
-      if (!conversationMap.has(msg.offer.id)) {
-        conversationMap.set(msg.offer.id, msg);
-      }
+    const result: any[] = [];
+    for (const offer of offers) {
+      const lastMsg = await this.messageRepo.findOne({
+        where: { offer: { id: offer.id } },
+        relations: { sender: true },
+        order: { createdAt: 'DESC' },
+      });
+      const unreadCount = await this.messageRepo.count({
+        where: {
+          offer: { id: offer.id },
+          sender: { id: Not(userId) },
+          readAt: IsNull(),
+        },
+      });
+      const otherUser =
+        offer.initiator?.id === userId ? offer.responder : offer.initiator;
+      const summaryTitles = (offer.items || [])
+        .map((i) => i.listing?.title)
+        .filter(Boolean);
+
+      result.push({
+        offerId: offer.id,
+        status: offer.status,
+        soulte: offer.soulte ? Number(offer.soulte) : 0,
+        isResponder: offer.responder?.id === userId,
+        otherUser: otherUser
+          ? {
+              id: otherUser.id,
+              displayName: otherUser.displayName || 'Membre Trocly',
+              phone: otherUser.whatsappNumber,
+            }
+          : { id: '', displayName: 'Membre Trocly' },
+        itemSummary: summaryTitles.join(' ⇄ '),
+        lastMessage:
+          lastMsg?.content ||
+          offer.message ||
+          'Nouvelle proposition d\'échange',
+        lastMessageAt: lastMsg?.createdAt || offer.updatedAt || offer.createdAt,
+        unreadCount,
+      });
     }
 
-    return Array.from(conversationMap.values());
+    result.sort(
+      (a, b) =>
+        new Date(b.lastMessageAt).getTime() -
+        new Date(a.lastMessageAt).getTime(),
+    );
+    return result;
   }
 
   /**
    * Delete a message (by sender only)
    */
-  async deleteMessage(messageId: string, userId: string): Promise<{ message: string }> {
+  async deleteMessage(
+    messageId: string,
+    userId: string,
+  ): Promise<{ message: string }> {
     const msg = await this.messageRepo.findOne({
       where: { id: messageId },
       relations: { sender: true },
     });
 
     if (!msg) {
-      throw new NotFoundException('Message not found');
+      throw new NotFoundException('Message introuvable');
     }
-
     if (msg.sender.id !== userId) {
-      throw new BadRequestException('You can only delete your own messages');
+      throw new ForbiddenException(
+        'Vous ne pouvez supprimer que vos propres messages',
+      );
     }
 
     await this.messageRepo.remove(msg);
-    return { message: 'Message deleted' };
+    return { message: 'Message supprimé' };
   }
 }

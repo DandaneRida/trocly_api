@@ -8,17 +8,12 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Injectable } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { MessagesService } from './messages.service';
 
 /**
- * C4 - Real-time chat via WebSocket
- * Users can chat in the context of an offer
- * Events:
- * - join-offer: Join offer chat room
- * - send-message: Send message (persisted + broadcast)
- * - message: Receive message
- * - typing: User typing indicator
+ * C4 - Real-time chat via Socket.IO with JWT handshake authentication
  */
 @WebSocketGateway({
   cors: { origin: '*', credentials: true },
@@ -28,192 +23,206 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  // Map of connected users: userId -> socket.id
   private connectedUsers: Map<string, string> = new Map();
-
-  // Map of user typing status: offerId -> Set<userId>
   private typingUsers: Map<string, Set<string>> = new Map();
 
-  constructor(private messagesService: MessagesService) {}
+  constructor(
+    private messagesService: MessagesService,
+    private jwtService: JwtService,
+  ) {}
 
-  /**
-   * Handle client connection
-   */
-  handleConnection(client: Socket) {
-    console.log(`[WebSocket] Client connected: ${client.id}`);
+  private extractToken(client: Socket): string | null {
+    const authToken = client.handshake.auth?.token;
+    if (typeof authToken === 'string' && authToken.trim()) {
+      return authToken.replace(/^Bearer\s+/i, '');
+    }
+    const headerAuth = client.handshake.headers?.authorization;
+    if (typeof headerAuth === 'string' && headerAuth.startsWith('Bearer ')) {
+      return headerAuth.slice(7).trim();
+    }
+    const queryToken = client.handshake.query?.token;
+    if (typeof queryToken === 'string' && queryToken.trim()) {
+      return queryToken.replace(/^Bearer\s+/i, '');
+    }
+    return null;
   }
 
-  /**
-   * Handle client disconnect
-   */
-  handleDisconnect(client: Socket) {
-    console.log(`[WebSocket] Client disconnected: ${client.id}`);
+  handleConnection(client: Socket) {
+    const token = this.extractToken(client);
+    if (!token) {
+      client.emit('error', { message: 'Authentication token required' });
+      client.disconnect(true);
+      return;
+    }
 
-    // Remove from connected users
-    for (const [userId, socketId] of this.connectedUsers.entries()) {
-      if (socketId === client.id) {
-        this.connectedUsers.delete(userId);
-        break;
+    try {
+      const payload = this.jwtService.verify(token, {
+        secret: process.env.JWT_SECRET || 'secret-temporaire-dev',
+        ignoreExpiration: true,
+      });
+      if (!payload?.sub || payload.pendingProfile) {
+        client.disconnect(true);
+        return;
       }
+      client.data.userId = payload.sub;
+      this.connectedUsers.set(payload.sub, client.id);
+    } catch {
+      client.emit('error', { message: 'Invalid JWT token' });
+      client.disconnect(true);
     }
   }
 
-  /**
-   * User joins offer chat room
-   * Event: 'join-offer'
-   * Data: { userId, offerId }
-   */
+  handleDisconnect(client: Socket) {
+    const userId = client.data?.userId;
+    if (userId && this.connectedUsers.get(userId) === client.id) {
+      this.connectedUsers.delete(userId);
+    }
+  }
+
   @SubscribeMessage('join-offer')
   async handleJoinOffer(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string; offerId: string },
+    @MessageBody() data: { offerId: string },
   ): Promise<void> {
-    const roomId = `offer-${data.offerId}`;
+    const userId = client.data?.userId;
+    if (!userId || !data?.offerId) {
+      client.emit('error', { message: 'Unauthorized or missing offerId' });
+      return;
+    }
 
-    // Store user connection
-    this.connectedUsers.set(data.userId, client.id);
+    try {
+      await this.messagesService.verifyParticipant(data.offerId, userId);
+      const roomId = `offer-${data.offerId}`;
+      client.join(roomId);
 
-    // Join Socket.io room
-    client.join(roomId);
+      this.server.to(roomId).emit('user-joined', {
+        userId,
+        timestamp: new Date(),
+      });
 
-    console.log(`[Chat] User ${data.userId} joined offer ${data.offerId}`);
-
-    // Notify others in room that user joined
-    this.server.to(roomId).emit('user-joined', {
-      userId: data.userId,
-      timestamp: new Date(),
-    });
-
-    // Send chat history to joining user
-    const messages = await this.messagesService.getOfferMessages(data.offerId);
-    client.emit('chat-history', messages);
+      const messages = await this.messagesService.getOfferMessages(
+        data.offerId,
+        userId,
+      );
+      client.emit('chat-history', messages);
+    } catch (error: any) {
+      client.emit('error', {
+        message: error?.message || 'Unable to join offer chat',
+      });
+    }
   }
 
-  /**
-   * Send message in offer chat
-   * Event: 'send-message'
-   * Data: { userId, offerId, content }
-   */
   @SubscribeMessage('send-message')
   async handleSendMessage(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string; offerId: string; content: string },
+    @MessageBody() data: { offerId: string; content: string },
   ): Promise<void> {
-    const roomId = `offer-${data.offerId}`;
+    const userId = client.data?.userId;
+    if (!userId || !data?.offerId) {
+      client.emit('error', { message: 'Unauthorized or missing offerId' });
+      return;
+    }
 
-    // Validate message
+    const roomId = `offer-${data.offerId}`;
     if (!data.content || data.content.trim().length === 0) {
       client.emit('error', { message: 'Message cannot be empty' });
       return;
     }
 
     try {
-      // Save message to database
       const message = await this.messagesService.createMessage(
         data.offerId,
-        data.userId,
+        userId,
         data.content,
       );
 
-      // Broadcast message to all users in room
       this.server.to(roomId).emit('message', {
         id: message.id,
-        senderId: message.sender.id,
-        senderName: message.sender.displayName,
+        offerId: data.offerId,
+        senderId: message.sender?.id || userId,
+        senderName: message.sender?.displayName || 'Membre',
         content: message.content,
+        createdAt: message.createdAt,
         timestamp: message.createdAt,
       });
 
-      // Clear typing indicator
-      this.clearTypingIndicator(roomId, data.userId);
-    } catch (error) {
-      client.emit('error', { message: 'Failed to send message' });
+      this.clearTypingIndicator(roomId, userId);
+    } catch (error: any) {
+      client.emit('error', {
+        message: error?.message || 'Failed to send message',
+      });
     }
   }
 
-  /**
-   * User typing indicator
-   * Event: 'typing'
-   * Data: { userId, offerId, isTyping }
-   */
   @SubscribeMessage('typing')
   handleTyping(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string; offerId: string; isTyping: boolean },
+    @MessageBody() data: { offerId: string; isTyping: boolean },
   ): void {
-    const roomId = `offer-${data.offerId}`;
+    const userId = client.data?.userId;
+    if (!userId || !data?.offerId) return;
 
+    const roomId = `offer-${data.offerId}`;
     if (!this.typingUsers.has(roomId)) {
       this.typingUsers.set(roomId, new Set());
     }
-
     const typing = this.typingUsers.get(roomId)!;
 
     if (data.isTyping) {
-      typing.add(data.userId);
+      typing.add(userId);
     } else {
-      typing.delete(data.userId);
+      typing.delete(userId);
     }
 
-    // Broadcast typing users
     this.server.to(roomId).emit('users-typing', {
-      typingUsers: Array.from(typing || new Set()),
+      typingUsers: Array.from(typing),
       timestamp: new Date(),
     });
   }
 
-  /**
-   * Mark message as read
-   * Event: 'mark-read'
-   * Data: { userId, offerId }
-   */
   @SubscribeMessage('mark-read')
   async handleMarkRead(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string; offerId: string },
+    @MessageBody() data: { offerId: string },
   ): Promise<void> {
-    try {
-      await this.messagesService.markOfferMessagesAsRead(data.offerId, data.userId);
+    const userId = client.data?.userId;
+    if (!userId || !data?.offerId) return;
 
+    try {
+      await this.messagesService.markOfferMessagesAsRead(data.offerId, userId);
       const roomId = `offer-${data.offerId}`;
       this.server.to(roomId).emit('messages-read', {
-        userId: data.userId,
+        userId,
         timestamp: new Date(),
       });
-    } catch (error) {
-      client.emit('error', { message: 'Failed to mark messages as read' });
+    } catch (error: any) {
+      client.emit('error', {
+        message: error?.message || 'Failed to mark messages as read',
+      });
     }
   }
 
-  /**
-   * Leave offer chat room
-   * Event: 'leave-offer'
-   * Data: { userId, offerId }
-   */
   @SubscribeMessage('leave-offer')
   handleLeaveOffer(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { userId: string; offerId: string },
+    @MessageBody() data: { offerId: string },
   ): void {
+    const userId = client.data?.userId;
+    if (!userId || !data?.offerId) return;
+
     const roomId = `offer-${data.offerId}`;
     client.leave(roomId);
-    this.connectedUsers.delete(data.userId);
-
-    console.log(`[Chat] User ${data.userId} left offer ${data.offerId}`);
+    this.clearTypingIndicator(roomId, userId);
 
     this.server.to(roomId).emit('user-left', {
-      userId: data.userId,
+      userId,
       timestamp: new Date(),
     });
   }
 
-  /**
-   * Private helper: Clear typing indicator
-   */
   private clearTypingIndicator(roomId: string, userId: string): void {
     const typing = this.typingUsers.get(roomId);
-    if (typing) {
-      typing.delete(userId);
+    if (typing && typing.delete(userId)) {
       this.server.to(roomId).emit('users-typing', {
         typingUsers: Array.from(typing),
         timestamp: new Date(),
@@ -221,9 +230,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  /**
-   * Emit notification to specific user (offline support via Redis later)
-   */
   notifyUser(userId: string, event: string, data: any): void {
     const socketId = this.connectedUsers.get(userId);
     if (socketId) {

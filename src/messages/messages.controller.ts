@@ -1,44 +1,88 @@
 import {
   Controller,
   Get,
+  Post,
+  Patch,
   Delete,
   Param,
   Query,
-  BadRequestException,
+  Body,
+  UseGuards,
+  Request,
 } from '@nestjs/common';
 import { MessagesService } from './messages.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('messages')
+@UseGuards(JwtAuthGuard)
 export class MessagesController {
   constructor(private messagesService: MessagesService) {}
 
   /**
-   * Get chat history for an offer
-   * GET /messages/offer/:offerId
+   * C4 - Get paginated chat history for an offer
+   * GET /messages/offer/:offerId?page=1&limit=50
    */
   @Get('offer/:offerId')
-  async getOfferMessages(@Param('offerId') offerId: string) {
-    return this.messagesService.getOfferMessages(offerId);
+  async getOfferMessages(
+    @Param('offerId') offerId: string,
+    @Request() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.messagesService.getOfferMessages(
+      offerId,
+      req.user.sub,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 50,
+    );
   }
 
   /**
-   * Get unread messages for user
+   * C4 - REST fallback to send a message on an offer
+   * POST /messages/offer/:offerId
+   */
+  @Post('offer/:offerId')
+  async sendMessage(
+    @Param('offerId') offerId: string,
+    @Body() body: { content: string },
+    @Request() req: any,
+  ) {
+    return this.messagesService.createMessage(
+      offerId,
+      req.user.sub,
+      body.content,
+    );
+  }
+
+  /**
+   * C4 - Mark messages in an offer as read
+   * PATCH /messages/offer/:offerId/read
+   */
+  @Patch('offer/:offerId/read')
+  async markOfferRead(@Param('offerId') offerId: string, @Request() req: any) {
+    const marked = await this.messagesService.markOfferMessagesAsRead(
+      offerId,
+      req.user.sub,
+    );
+    return { marked };
+  }
+
+  /**
+   * Get unread messages for authenticated user
    * GET /messages/unread
    */
   @Get('unread')
-  async getUnreadMessages(@Query('userId') userId?: string) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.messagesService.getUnreadMessages(userId);
+  async getUnreadMessages(@Request() req: any) {
+    return this.messagesService.getUnreadMessages(req.user.sub);
   }
 
   /**
-   * Get unread count for user
+   * Get unread count for authenticated user
    * GET /messages/unread/count
    */
   @Get('unread/count')
-  async getUnreadCount(@Query('userId') userId?: string) {
-    if (!userId) throw new BadRequestException('userId required');
-    const count = await this.messagesService.getUnreadCount(userId);
+  async getUnreadCount(@Request() req: any) {
+    const count = await this.messagesService.getUnreadCount(req.user.sub);
     return { unreadCount: count };
   }
 
@@ -48,26 +92,21 @@ export class MessagesController {
    */
   @Get('conversations')
   async getRecentConversations(
-    @Query('userId') userId?: string,
+    @Request() req: any,
     @Query('limit') limit?: string,
   ) {
-    if (!userId) throw new BadRequestException('userId required');
     return this.messagesService.getRecentConversations(
-      userId,
-      limit ? parseInt(limit) : 10,
+      req.user.sub,
+      limit ? parseInt(limit, 10) : 30,
     );
   }
 
   /**
-   * Delete a message
+   * Delete a message (sender only)
    * DELETE /messages/:id
    */
   @Delete(':id')
-  async deleteMessage(
-    @Param('id') messageId: string,
-    @Query('userId') userId?: string,
-  ) {
-    if (!userId) throw new BadRequestException('userId required');
-    return this.messagesService.deleteMessage(messageId, userId);
+  async deleteMessage(@Param('id') messageId: string, @Request() req: any) {
+    return this.messagesService.deleteMessage(messageId, req.user.sub);
   }
 }
