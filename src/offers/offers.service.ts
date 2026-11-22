@@ -40,13 +40,20 @@ export class OffersService implements OnModuleInit {
         ALTER TABLE offers ALTER COLUMN author_id DROP NOT NULL;
       EXCEPTION WHEN undefined_column THEN NULL; END $$;
       DO $$ BEGIN
-        ALTER TABLE offer_items ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid();
-      EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+        ALTER TABLE offers ALTER COLUMN version DROP NOT NULL;
+      EXCEPTION WHEN undefined_column THEN NULL; END $$;
+
+      ALTER TABLE offer_items
+        ADD COLUMN IF NOT EXISTS id uuid DEFAULT gen_random_uuid(),
+        ADD COLUMN IF NOT EXISTS quantity int DEFAULT 1;
+      DO $$ BEGIN
+        ALTER TABLE offer_items ALTER COLUMN side DROP NOT NULL;
+      EXCEPTION WHEN undefined_column THEN NULL; END $$;
     `);
   }
 
   /**
-   * C1 - Create a multi-object exchange offer with optional soulte
+   * C1 - Create a multi-object exchange offer with optional soulte flag (no fixed price)
    */
   async createOffer(
     initiatorId: string,
@@ -54,6 +61,7 @@ export class OffersService implements OnModuleInit {
       targetListingId: string;
       offeringListingIds: string[];
       soulte?: number;
+      soultePossible?: boolean;
       message?: string;
     },
   ): Promise<Offer> {
@@ -61,7 +69,9 @@ export class OffersService implements OnModuleInit {
       throw new BadRequestException('Annonce cible requise');
     }
     if (!data.offeringListingIds || data.offeringListingIds.length === 0) {
-      throw new BadRequestException('Sélectionnez au moins un objet à proposer');
+      throw new BadRequestException(
+        'Vous devez sélectionner au moins un de vos objets pour proposer un échange',
+      );
     }
 
     const targetListing = await this.listingRepo.findOne({
@@ -82,38 +92,60 @@ export class OffersService implements OnModuleInit {
       );
     }
 
+    const uniqueOfferingIds = [...new Set(data.offeringListingIds)].filter(
+      (id) => id !== data.targetListingId,
+    );
+    if (uniqueOfferingIds.length === 0) {
+      throw new BadRequestException(
+        'Sélectionnez au moins un de vos propres objets (différent de l\'annonce cible)',
+      );
+    }
+
     const offeringListings = await this.listingRepo.find({
-      where: { id: In(data.offeringListingIds) },
+      where: { id: In(uniqueOfferingIds) },
       relations: { user: true },
     });
-    if (offeringListings.length !== data.offeringListingIds.length) {
-      throw new BadRequestException('Un ou plusieurs objets proposés sont introuvables');
+    if (offeringListings.length !== uniqueOfferingIds.length) {
+      throw new BadRequestException(
+        'Un ou plusieurs objets proposés sont introuvables',
+      );
     }
     for (const listing of offeringListings) {
       if (listing.user?.id !== initiatorId) {
         throw new ForbiddenException(
-          'Vous ne pouvez proposer que vos propres annonces',
+          'Vous ne pouvez proposer que vos propres annonces actives',
+        );
+      }
+      if (listing.status !== 'active') {
+        throw new BadRequestException(
+          `L'annonce "${listing.title}" n'est plus active`,
         );
       }
     }
 
+    const soulteValue =
+      data.soultePossible === true
+        ? 1
+        : data.soulte && data.soulte > 0
+          ? data.soulte
+          : undefined;
+
     const offer = this.offerRepo.create({
       initiator: { id: initiatorId } as any,
       responder: { id: responderId } as any,
-      soulte: data.soulte && data.soulte > 0 ? data.soulte : undefined,
+      soulte: soulteValue,
       message: data.message?.trim() || '',
       status: OfferStatus.PENDING,
     });
 
     const savedOffer = await this.offerRepo.save(offer);
 
-    const allItemIds = [
-      ...new Set([data.targetListingId, ...data.offeringListingIds]),
-    ];
+    const allItemIds = [...new Set([data.targetListingId, ...uniqueOfferingIds])];
     for (const listingId of allItemIds) {
       const offerItem = this.offerItemRepo.create({
         offer: { id: savedOffer.id } as any,
         listing: { id: listingId } as any,
+        quantity: 1,
       });
       await this.offerItemRepo.save(offerItem);
     }
@@ -123,7 +155,7 @@ export class OffersService implements OnModuleInit {
         responderId,
         NotificationType.OFFER_RECEIVED,
         'Nouvelle proposition d\'échange',
-        `Proposition reçue pour "${targetListing.title}" (${data.offeringListingIds.length} objet(s))`,
+        `Proposition reçue pour "${targetListing.title}" (${uniqueOfferingIds.length} objet(s))`,
         { offerId: savedOffer.id, route: `/chat/${savedOffer.id}` },
       )
       .catch(() => {});
@@ -140,9 +172,6 @@ export class OffersService implements OnModuleInit {
     return offer;
   }
 
-  /**
-   * C3 - Accept an offer
-   */
   async acceptOffer(offerId: string, userId: string): Promise<Offer> {
     const offer = await this.getOfferById(offerId);
     if (offer.responder?.id !== userId) {
@@ -170,9 +199,6 @@ export class OffersService implements OnModuleInit {
     return saved;
   }
 
-  /**
-   * C3 - Reject an offer
-   */
   async rejectOffer(offerId: string, userId: string): Promise<Offer> {
     const offer = await this.getOfferById(offerId);
     if (offer.responder?.id !== userId) {
@@ -200,9 +226,6 @@ export class OffersService implements OnModuleInit {
     return saved;
   }
 
-  /**
-   * C2 - Create a counter-offer
-   */
   async createCounterOffer(
     responderId: string,
     originalOfferId: string,
@@ -214,7 +237,9 @@ export class OffersService implements OnModuleInit {
   ): Promise<Offer> {
     const originalOffer = await this.getOfferById(originalOfferId);
     if (originalOffer.responder?.id !== responderId) {
-      throw new ForbiddenException('Seul le destinataire peut faire une contre-offre');
+      throw new ForbiddenException(
+        'Seul le destinataire peut faire une contre-offre',
+      );
     }
     if (originalOffer.status !== OfferStatus.PENDING) {
       throw new BadRequestException('Cette offre n\'est plus en attente');
@@ -241,6 +266,7 @@ export class OffersService implements OnModuleInit {
       const offerItem = this.offerItemRepo.create({
         offer: { id: savedCounter.id } as any,
         listing: { id: listingId } as any,
+        quantity: 1,
       });
       await this.offerItemRepo.save(offerItem);
     }
@@ -250,9 +276,7 @@ export class OffersService implements OnModuleInit {
         originalOffer.initiator.id,
         NotificationType.OFFER_COUNTERED,
         'Contre-proposition reçue',
-        data.counterSoulte
-          ? `Nouvelle proposition avec soulte de ${data.counterSoulte} DH`
-          : 'Votre partenaire a modifié les conditions de l\'échange.',
+        'Votre partenaire a modifié les conditions de l\'échange.',
         { offerId: savedCounter.id, route: `/chat/${savedCounter.id}` },
       )
       .catch(() => {});

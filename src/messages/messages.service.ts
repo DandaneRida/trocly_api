@@ -1,11 +1,12 @@
 import {
   Injectable,
+  OnModuleInit,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Not, Repository } from 'typeorm';
+import { DataSource, IsNull, Not, Repository } from 'typeorm';
 import { Message } from './message.entity';
 import { Offer } from '../offers/offer.entity';
 import { User } from '../users/user.entity';
@@ -13,13 +14,31 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification.entity';
 
 @Injectable()
-export class MessagesService {
+export class MessagesService implements OnModuleInit {
   constructor(
     @InjectRepository(Message) private messageRepo: Repository<Message>,
     @InjectRepository(Offer) private offerRepo: Repository<Offer>,
     @InjectRepository(User) private userRepo: Repository<User>,
+    private dataSource: DataSource,
     private notificationsService: NotificationsService,
   ) {}
+
+  async onModuleInit() {
+    await this.dataSource.query(`
+      ALTER TABLE messages
+        ADD COLUMN IF NOT EXISTS offer_id uuid,
+        ADD COLUMN IF NOT EXISTS content text;
+      DO $$ BEGIN
+        ALTER TABLE messages ALTER COLUMN negotiation_id DROP NOT NULL;
+      EXCEPTION WHEN undefined_column THEN NULL; END $$;
+      DO $$ BEGIN
+        ALTER TABLE messages ALTER COLUMN body DROP NOT NULL;
+      EXCEPTION WHEN undefined_column THEN NULL; END $$;
+      DO $$ BEGIN
+        ALTER TABLE messages ALTER COLUMN kind DROP NOT NULL;
+      EXCEPTION WHEN undefined_column THEN NULL; END $$;
+    `);
+  }
 
   async verifyParticipant(offerId: string, userId: string): Promise<Offer> {
     const offer = await this.offerRepo.findOne({

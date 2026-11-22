@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Index, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Index, CreateDateColumn, UpdateDateColumn, type Relation } from 'typeorm';
 import { User } from '../users/user.entity';
 import { City } from '../cities/city.entity';
 
@@ -51,11 +51,11 @@ export class Listing {
 
   @ManyToOne(() => User, user => user.listings)
   @JoinColumn({ name: 'user_id' })
-  user: User;
+  user: Relation<User>;
 
   @ManyToOne(() => City, city => city.listings)
   @JoinColumn({ name: 'city_id' })
-  city: City;
+  city: Relation<City>;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

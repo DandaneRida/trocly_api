@@ -32,6 +32,12 @@ export class NotificationsService implements OnModuleInit {
         is_read boolean NOT NULL DEFAULT false,
         created_at timestamptz NOT NULL DEFAULT now()
       );
+      ALTER TABLE notifications
+        ADD COLUMN IF NOT EXISTS type varchar(64) NOT NULL DEFAULT 'info',
+        ADD COLUMN IF NOT EXISTS title varchar(200) NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS body text NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS data jsonb,
+        ADD COLUMN IF NOT EXISTS is_read boolean NOT NULL DEFAULT false;
       CREATE INDEX IF NOT EXISTS idx_notifications_user_created
         ON notifications (user_id, created_at DESC);
 

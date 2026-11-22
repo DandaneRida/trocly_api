@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany, type Relation } from 'typeorm';
 import { City } from '../cities/city.entity';
 import { Listing } from '../listings/listing.entity';
 
@@ -18,8 +18,8 @@ export class User {
 
   @ManyToOne(() => City, city => city.users)
   @JoinColumn({ name: 'main_city_id' })
-  city: City;
+  city: Relation<City>;
 
   @OneToMany(() => Listing, (listing: Listing) => listing.user)
-  listings: Listing[];
+  listings: Relation<Listing>[];
 }
