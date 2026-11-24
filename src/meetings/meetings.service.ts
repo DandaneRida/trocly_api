@@ -119,6 +119,11 @@ export class MeetingsService implements OnModuleInit {
       if (!isParticipant) {
         throw new ForbiddenException('Vous ne participez pas à cette offre');
       }
+      if (offer.status !== 'accepted') {
+        throw new BadRequestException(
+          'L\'offre doit être acceptée avant de proposer un rendez-vous',
+        );
+      }
       responderId =
         offer.initiator?.id === proposerId
           ? offer.responder?.id
@@ -197,6 +202,11 @@ export class MeetingsService implements OnModuleInit {
       meeting.responder?.id !== userId
     ) {
       throw new ForbiddenException('Accès refusé à ce rendez-vous');
+    }
+    if (meeting.initiator?.id === userId) {
+      throw new ForbiddenException(
+        'Seul le destinataire de la proposition de rendez-vous peut l\'accepter et générer les QR codes',
+      );
     }
     if (meeting.expiresAt && new Date() > meeting.expiresAt) {
       meeting.status = MeetingStatus.EXPIRED;

@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
 import { MeetingStatus } from './meeting.entity';
 
@@ -115,5 +115,26 @@ describe('MeetingsService (Unit)', () => {
     expect(count).toBe(1);
     expect(overdueMeeting.status).toBe(MeetingStatus.EXPIRED);
     expect(meetingRepo.save).toHaveBeenCalledWith(overdueMeeting);
+  });
+
+  it('rejects meeting acceptance by the proposer (only responder can accept and generate QR)', async () => {
+    const future = new Date(Date.now() + 3600_000);
+    meetingRepo.findOne.mockResolvedValue({
+      id: 'm-prop',
+      status: MeetingStatus.PROPOSED,
+      expiresAt: future,
+      initiator: { id: 'user-proposer' },
+      responder: { id: 'user-responder' },
+      proposedLocation: 'Place El Hedim',
+    });
+
+    await expect(service.acceptMeeting('m-prop', 'user-proposer')).rejects.toThrow(
+      ForbiddenException,
+    );
+
+    const accepted = await service.acceptMeeting('m-prop', 'user-responder');
+    expect(accepted.status).toBe(MeetingStatus.ACCEPTED);
+    expect(accepted.qrPayloadInitiator).toBeTruthy();
+    expect(accepted.qrPayloadResponder).toBeTruthy();
   });
 });
