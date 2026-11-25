@@ -1,4 +1,10 @@
-import { Injectable, BadRequestException, UnauthorizedException, Inject } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  UnauthorizedException,
+  Inject,
+  Logger,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
@@ -13,6 +19,7 @@ import { RefreshToken } from './refresh-token.entity';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private twilioClient: Twilio | null = null;
   private readonly TWILIO_WHATSAPP_FROM =
     process.env.TWILIO_WHATSAPP_FROM || 'whatsapp:+1234567890';
@@ -45,113 +52,217 @@ export class AuthService {
   }
 
   /**
-   * Format phone number to international format
-   * Input: +212612345678 or 0612345678 or 612345678
-   * Output: whatsapp:+212612345678
+   * Normalize Moroccan phone number to international digits without '+' or spaces.
+   * Examples:
+   * - "0675629431"      -> "212675629431"
+   * - "+212 675-629431" -> "212675629431"
+   * - "00212675629431"  -> "212675629431"
+   * - "212675629431"    -> "212675629431"
    */
-  private formatWhatsAppNumber(phoneNumber: string): string {
-    let formatted = phoneNumber.replace(/\D/g, ''); // Remove non-digits
-
-    // Handle Moroccan format variations
-    if (formatted.startsWith('0')) {
-      formatted = '212' + formatted.slice(1); // 0612... → 212612...
-    } else if (!formatted.startsWith('212')) {
-      throw new BadRequestException('Invalid Moroccan phone number. Use +212XXXXXXXXX or 0XXXXXXXXX');
+  normalizeMoroccanPhone(phoneNumber: string): string {
+    let digits = (phoneNumber || '').replace(/\D/g, '');
+    if (digits.startsWith('00212')) {
+      digits = digits.slice(2);
+    } else if (digits.startsWith('0') && digits.length === 10) {
+      digits = '212' + digits.slice(1);
+    } else if (digits.length === 9 && /^[5-7]/.test(digits)) {
+      digits = '212' + digits;
     }
 
-    return `whatsapp:+${formatted}`;
+    if (!/^212\d{9}$/.test(digits)) {
+      throw new BadRequestException(
+        'Numéro marocain invalide. Utilisez le format 06XXXXXXXX ou +2126XXXXXXXX.',
+      );
+    }
+    return digits;
+  }
+
+  private formatWhatsAppNumber(phoneNumber: string): string {
+    return `whatsapp:+${this.normalizeMoroccanPhone(phoneNumber)}`;
   }
 
   /**
-   * Validate phone number is Moroccan (+212)
+   * Validate phone number is Moroccan (+212 / 06 / 07 / 05)
    */
   private validateMoroccanNumber(phoneNumber: string): boolean {
-    const cleaned = phoneNumber.replace(/\D/g, '');
-    return cleaned.startsWith('212') || cleaned.startsWith('0');
+    try {
+      this.normalizeMoroccanPhone(phoneNumber);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Send OTP confirmation message via Meta WhatsApp Cloud API (Graph API).
+   * Never throws: logs Meta API errors cleanly (e.g., 24h window closed or expired token)
+   * so dev/test workflows continue uninterrupted.
+   */
+  private async sendViaMetaWhatsApp(
+    toDigits: string,
+    otp: string,
+  ): Promise<{ sent: boolean; messageId?: string }> {
+    const phoneNumberId = (process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+    const accessToken = (process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
+    const apiVersion = (process.env.WHATSAPP_API_VERSION || 'v25.0').trim();
+
+    if (!phoneNumberId || !accessToken) {
+      return { sent: false };
+    }
+
+    // Skip external Graph API calls on synthetic E2E test runs unless explicitly testing Meta
+    if (
+      process.env.JEST_WORKER_ID !== undefined &&
+      process.env.TEST_META_WHATSAPP !== 'true'
+    ) {
+      return { sent: false };
+    }
+
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: toDigits,
+      type: 'text',
+      text: {
+        preview_url: false,
+        body: `Votre code de confirmation Trocly est : ${otp}. Valable 10 minutes.`,
+      },
+    };
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(8000),
+      });
+
+      const rawText = await response.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = { raw: rawText };
+      }
+
+      if (!response.ok) {
+        const metaErr =
+          data?.error?.message ||
+          data?.raw ||
+          `HTTP ${response.status}`;
+        const metaCode = data?.error?.code ? ` (code ${data.error.code})` : '';
+        this.logger.warn(
+          `[META WHATSAPP] Échec d'envoi vers ${toDigits}${metaCode}: ${metaErr}`,
+        );
+        return { sent: false };
+      }
+
+      const messageId = data?.messages?.[0]?.id as string | undefined;
+      this.logger.log(
+        `[META WHATSAPP] Code OTP envoyé vers ${toDigits} (wamid: ${messageId || 'ok'})`,
+      );
+      return { sent: true, messageId };
+    } catch (error: any) {
+      this.logger.warn(
+        `[META WHATSAPP] Erreur réseau vers ${toDigits}: ${error?.message || error}`,
+      );
+      return { sent: false };
+    }
   }
 
   // ==================== OTP ENDPOINTS ====================
 
   /**
-   * A2 - Send OTP via WhatsApp
+   * A2 - Send 6-digit OTP via Meta WhatsApp Cloud API (with Twilio & dev/log fallback)
    * Supports: +212XXXXXXXXX, 0XXXXXXXXX, 212XXXXXXXXX
    */
-  async sendOtp(phoneNumber: string): Promise<{ message: string; sid?: string }> {
-    // Validate Moroccan number
-    if (!this.validateMoroccanNumber(phoneNumber)) {
-      throw new BadRequestException(
-        'Only Moroccan numbers (+212) are allowed. Format: +212XXXXXXXXX or 0XXXXXXXXX',
-      );
-    }
-
-    // Generate OTP
+  async sendOtp(
+    phoneNumber: string,
+  ): Promise<{ message: string; sid?: string; whatsappSent?: boolean }> {
+    const normalizedDigits = this.normalizeMoroccanPhone(phoneNumber);
     const otp = this.generateOTP();
 
-    // Store in cache (expires in 5 minutes = 300 seconds)
-    const cacheKey = `otp_${phoneNumber}`;
-    await this.cacheManager.set(cacheKey, otp, 300000); // Cache manager uses milliseconds
+    // Store in cache for 10 minutes (600,000 ms) under normalized digits + raw input
+    const ttlMs = 600_000;
+    await this.cacheManager.set(`otp_${normalizedDigits}`, otp, ttlMs);
+    await this.cacheManager.set(`otp_${phoneNumber}`, otp, ttlMs);
 
-    // Attempt: Send via Twilio WhatsApp if configured, otherwise 100% free OTP mode
-    let twilioSid: string | null = null;
-    if (this.twilioClient) {
+    // 1. Primary: Meta WhatsApp Cloud API
+    const metaResult = await this.sendViaMetaWhatsApp(normalizedDigits, otp);
+    let externalId: string | undefined = metaResult.messageId;
+
+    // 2. Optional legacy fallback: Twilio WhatsApp if explicitly enabled and Meta wasn't used
+    if (!metaResult.sent && this.twilioClient) {
       try {
         const whatsappNumber = this.formatWhatsAppNumber(phoneNumber);
         const message = await this.twilioClient.messages.create({
           from: this.TWILIO_WHATSAPP_FROM,
           to: whatsappNumber,
-          body: `Your Trocly verification code is: ${otp}\n\nValid for 5 minutes. Never share this code.`,
+          body: `Votre code de confirmation Trocly est : ${otp}. Valable 10 minutes.`,
         });
-        twilioSid = message.sid;
-        console.log(
-          `[TWILIO] OTP sent via WhatsApp to ${phoneNumber} (SID: ${message.sid})`,
+        externalId = message.sid;
+        this.logger.log(
+          `[TWILIO] OTP envoyé vers +${normalizedDigits} (SID: ${message.sid})`,
         );
-      } catch (error) {
-        console.error('[TWILIO ERROR]', (error as any)?.message || error);
+      } catch (error: any) {
+        this.logger.warn(`[TWILIO ERROR] ${error?.message || error}`);
       }
-    } else {
-      console.log(
-        `[FREE-OTP] OTP for ${phoneNumber}: ${otp} (or demo code 123456, valid for 5 min)`,
+    }
+
+    // 3. Always keep OTP visible in server logs in dev/test or when external send fails
+    if (!metaResult.sent || process.env.NODE_ENV !== 'production') {
+      this.logger.log(
+        `[OTP] Code de confirmation pour +${normalizedDigits} : ${otp} (valable 10 min)`,
       );
     }
 
     return {
-      message: 'OTP sent via WhatsApp. Valid for 5 minutes.',
-      sid: twilioSid || undefined,
+      message: 'Code de confirmation envoyé via WhatsApp. Valable 10 minutes.',
+      sid: externalId,
+      whatsappSent: metaResult.sent,
     };
   }
 
   /**
    * A2 - Verify OTP code
-   * Free OTP mode: accepts generated OTP or demo code "123456"
+   * Accepts the generated 6-digit OTP (and demo fallback "123456" when FREE_OTP_MODE is active)
    */
   async verifyOtp(
     phoneNumber: string,
     code: string,
   ): Promise<{ accessToken: string; refreshToken?: string; isNewUser: boolean }> {
-    if (!this.validateMoroccanNumber(phoneNumber)) {
-      throw new BadRequestException('Invalid Moroccan phone number.');
-    }
+    const normalizedDigits = this.normalizeMoroccanPhone(phoneNumber);
 
-    const cacheKey = `otp_${phoneNumber}`;
-    const savedOtp = await this.cacheManager.get<string>(cacheKey);
+    const savedOtp =
+      (await this.cacheManager.get<string>(`otp_${normalizedDigits}`)) ??
+      (await this.cacheManager.get<string>(`otp_${phoneNumber}`));
 
+    const trimmedCode = (code || '').trim();
     const isValid = this.FREE_OTP_MODE
-      ? code === '123456' || (savedOtp != null && code === savedOtp)
-      : savedOtp != null && code === savedOtp;
+      ? trimmedCode === '123456' || (savedOtp != null && trimmedCode === savedOtp)
+      : savedOtp != null && trimmedCode === savedOtp;
 
     if (!isValid) {
       throw new UnauthorizedException('Invalid or expired OTP code.');
     }
 
     // Clear OTP from cache
-    await this.cacheManager.del(cacheKey);
+    await this.cacheManager.del(`otp_${normalizedDigits}`);
+    await this.cacheManager.del(`otp_${phoneNumber}`);
 
-    // Check if user exists
-    const user = await this.usersService.findByWhatsapp(phoneNumber);
+    // Check if user exists (by raw input or canonical +212 format)
+    const canonicalPlus = `+${normalizedDigits}`;
+    const user =
+      (await this.usersService.findByWhatsapp(phoneNumber)) ||
+      (phoneNumber !== canonicalPlus
+        ? await this.usersService.findByWhatsapp(canonicalPlus)
+        : null);
 
     if (!user) {
-      // New user: return temp token for profile completion
-      const tempPayload = { sub: phoneNumber, pendingProfile: true };
+      const tempPayload = { sub: canonicalPlus, pendingProfile: true };
       const tempToken = this.jwtService.sign(tempPayload, { expiresIn: '1h' });
       return {
         accessToken: tempToken,
@@ -159,7 +270,6 @@ export class AuthService {
       };
     }
 
-    // Existing user: generate JWT tokens
     const tokens = await this.generateTokens(user);
     return {
       ...tokens,
