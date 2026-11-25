@@ -137,4 +137,36 @@ describe('MeetingsService (Unit)', () => {
     expect(accepted.qrPayloadInitiator).toBeTruthy();
     expect(accepted.qrPayloadResponder).toBeTruthy();
   });
+
+  it('allows a participant to cancel a meeting and notifies the partner', async () => {
+    const future = new Date(Date.now() + 3600_000);
+    meetingRepo.findOne.mockResolvedValue({
+      id: 'm-cancel',
+      offerId: 'o-1',
+      status: MeetingStatus.ACCEPTED,
+      expiresAt: future,
+      initiator: { id: 'user-a', displayName: 'Yassine' },
+      responder: { id: 'user-b', displayName: 'Salma' },
+      proposedLocation: 'Place El Hedim',
+      qrPayloadInitiator: 'qr-1',
+      qrPayloadResponder: 'qr-2',
+    });
+
+    const cancelled = await service.cancelMeeting(
+      'm-cancel',
+      'user-a',
+      'Empêchement imprévu',
+    );
+
+    expect(cancelled.status).toBe(MeetingStatus.CANCELLED);
+    expect(cancelled.cancelReason).toBe('Empêchement imprévu');
+    expect(cancelled.qrPayloadInitiator).toBeNull();
+    expect(notificationsService.notifyUser).toHaveBeenCalledWith(
+      'user-b',
+      'meeting_cancelled',
+      'Rendez-vous annulé',
+      expect.stringContaining('Empêchement imprévu'),
+      expect.objectContaining({ meetingId: 'm-cancel' }),
+    );
+  });
 });

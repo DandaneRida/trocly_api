@@ -42,7 +42,21 @@ export class MeetingsService implements OnModuleInit {
         ADD COLUMN IF NOT EXISTS initiator_scanned_at timestamptz,
         ADD COLUMN IF NOT EXISTS responder_scanned_at timestamptz,
         ADD COLUMN IF NOT EXISTS scanned_at timestamptz,
-        ADD COLUMN IF NOT EXISTS scanned_by_id uuid;
+        ADD COLUMN IF NOT EXISTS scanned_by_id uuid,
+        ADD COLUMN IF NOT EXISTS cancel_reason text,
+        ADD COLUMN IF NOT EXISTS cancelled_by_id uuid;
+      DO $$ BEGIN
+        ALTER TYPE meetings_status_enum ADD VALUE IF NOT EXISTS 'cancelled';
+      EXCEPTION WHEN undefined_object THEN NULL; END $$;
+      UPDATE meetings m
+      SET status = 'cancelled',
+          cancel_reason = COALESCE(m.cancel_reason, 'Annonce supprimée'),
+          qr_payload_initiator = NULL,
+          qr_payload_responder = NULL
+      WHERE m.status IN ('proposed', 'accepted')
+        AND NOT EXISTS (
+          SELECT 1 FROM offer_items oi WHERE oi.offer_id = m.offer_id
+        );
       DO $$ BEGIN
         ALTER TABLE meetings ALTER COLUMN negotiation_id DROP NOT NULL;
       EXCEPTION WHEN undefined_column THEN NULL; END $$;
@@ -246,6 +260,71 @@ export class MeetingsService implements OnModuleInit {
         { meetingId: saved.id, route: `/my-qr/${saved.id}` },
       )
       .catch(() => {});
+
+    return saved;
+  }
+
+  /**
+   * Cancel a proposed or accepted meeting (by either participant) and notify partner
+   */
+  async cancelMeeting(
+    meetingId: string,
+    userId: string,
+    reason?: string,
+  ): Promise<Meeting> {
+    const meeting = await this.meetingRepo.findOne({
+      where: { id: meetingId },
+      relations: { initiator: true, responder: true },
+    });
+    if (!meeting) throw new NotFoundException('Rendez-vous introuvable');
+
+    const isInitiator = meeting.initiator?.id === userId;
+    const isResponder = meeting.responder?.id === userId;
+    if (!isInitiator && !isResponder) {
+      throw new ForbiddenException('Accès refusé à ce rendez-vous');
+    }
+
+    if (
+      meeting.status === MeetingStatus.VALIDATED ||
+      meeting.status === MeetingStatus.COMPLETED
+    ) {
+      throw new BadRequestException(
+        'Impossible d\'annuler un rendez-vous déjà validé',
+      );
+    }
+    if (meeting.status === MeetingStatus.CANCELLED) {
+      return meeting;
+    }
+
+    const cleanReason = reason?.trim() || 'Annulé par votre partenaire';
+    meeting.status = MeetingStatus.CANCELLED;
+    meeting.cancelReason = cleanReason;
+    meeting.cancelledById = userId;
+    meeting.qrPayloadInitiator = null as any;
+    meeting.qrPayloadResponder = null as any;
+
+    const saved = await this.meetingRepo.save(meeting);
+
+    const otherId = isInitiator ? meeting.responder?.id : meeting.initiator?.id;
+    const cancellerName = isInitiator
+      ? meeting.initiator?.displayName || 'Votre partenaire'
+      : meeting.responder?.displayName || 'Votre partenaire';
+
+    if (otherId) {
+      this.notificationsService
+        .notifyUser(
+          otherId,
+          NotificationType.MEETING_CANCELLED,
+          'Rendez-vous annulé',
+          `${cancellerName} a annulé le rendez-vous prévu à « ${meeting.proposedLocation} » (${cleanReason}).`,
+          {
+            meetingId: saved.id,
+            offerId: saved.offerId,
+            route: `/my-qr/${saved.id}`,
+          },
+        )
+        .catch(() => {});
+    }
 
     return saved;
   }

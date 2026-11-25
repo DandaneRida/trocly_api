@@ -6,11 +6,13 @@ import { ListingsController } from './listings.controller';
 import { User } from '../users/user.entity';
 import { City } from '../cities/city.entity';
 import { AuthModule } from '../auth/auth.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Listing, User, City]),
     AuthModule,
+    NotificationsModule,
   ],
   providers: [ListingsService],
   controllers: [ListingsController],

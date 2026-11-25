@@ -68,6 +68,12 @@ export class Meeting {
   @Column({ name: 'scanned_by_id', nullable: true })
   scannedById: string;
 
+  @Column({ name: 'cancel_reason', type: 'text', nullable: true })
+  cancelReason: string | null;
+
+  @Column({ name: 'cancelled_by_id', type: 'varchar', nullable: true })
+  cancelledById: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

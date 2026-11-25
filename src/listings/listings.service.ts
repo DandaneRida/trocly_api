@@ -10,6 +10,8 @@ import { Repository, ILike, Between } from 'typeorm';
 import { Listing, ListingStatus } from './listing.entity';
 import { User } from '../users/user.entity';
 import { City } from '../cities/city.entity';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/notification.entity';
 
 @Injectable()
 export class ListingsService {
@@ -17,6 +19,7 @@ export class ListingsService {
     @InjectRepository(Listing) private listingRepo: Repository<Listing>,
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(City) private cityRepo: Repository<City>,
+    private notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -239,13 +242,111 @@ export class ListingsService {
       throw new ForbiddenException('You can only delete your own listings');
     }
 
+    const notificationsToSend: Array<{
+      recipientId: string;
+      type: NotificationType;
+      title: string;
+      body: string;
+      data: Record<string, any>;
+    }> = [];
+
     await this.listingRepo.manager.transaction(async (manager) => {
-      await manager.query(
-        `UPDATE offers SET status = 'cancelled'
-         WHERE id IN (SELECT offer_id FROM offer_items WHERE listing_id = $1)
-           AND status IN ('pending', 'countered')`,
+      const affectedOffers: Array<{
+        id: string;
+        initiator_id: string;
+        responder_id: string;
+        status: string;
+      }> = await manager.query(
+        `SELECT id, initiator_id, responder_id, status
+         FROM offers
+         WHERE id IN (SELECT offer_id FROM offer_items WHERE listing_id = $1)`,
         [listingId],
       );
+
+      if (affectedOffers.length > 0) {
+        const offerIds = affectedOffers.map((o) => o.id);
+
+        // Cancel active/proposed meetings tied to these offers
+        const affectedMeetings: Array<{
+          id: string;
+          offer_id: string;
+          initiator_id: string;
+          responder_id: string;
+          proposed_location: string;
+        }> = await manager.query(
+          `SELECT id, offer_id, initiator_id, responder_id, proposed_location
+           FROM meetings
+           WHERE offer_id = ANY($1)
+             AND status IN ('proposed', 'accepted')`,
+          [offerIds],
+        );
+
+        if (affectedMeetings.length > 0) {
+          const meetingIds = affectedMeetings.map((m) => m.id);
+          const reason = `Annonce « ${listing.title} » supprimée par son propriétaire`;
+          await manager.query(
+            `UPDATE meetings
+             SET status = 'cancelled',
+                 cancel_reason = $2,
+                 cancelled_by_id = $3,
+                 qr_payload_initiator = NULL,
+                 qr_payload_responder = NULL
+             WHERE id = ANY($1)`,
+            [meetingIds, reason, userId],
+          );
+
+          for (const m of affectedMeetings) {
+            const partnerId =
+              m.initiator_id === userId ? m.responder_id : m.initiator_id;
+            if (partnerId && partnerId !== userId) {
+              notificationsToSend.push({
+                recipientId: partnerId,
+                type: NotificationType.MEETING_CANCELLED,
+                title: 'Rendez-vous annulé — Annonce supprimée',
+                body: `L'annonce « ${listing.title} » a été supprimée. Le rendez-vous à « ${m.proposed_location} » est annulé.`,
+                data: {
+                  meetingId: m.id,
+                  offerId: m.offer_id,
+                  route: `/my-qr/${m.id}`,
+                },
+              });
+            }
+          }
+        }
+
+        // Cancel open offers (pending, countered, or accepted without validated exchange)
+        await manager.query(
+          `UPDATE offers
+           SET status = 'cancelled'
+           WHERE id = ANY($1)
+             AND status IN ('pending', 'countered', 'accepted')`,
+          [offerIds],
+        );
+
+        const notifiedOfferPartners = new Set(
+          notificationsToSend.map((n) => n.recipientId),
+        );
+        for (const o of affectedOffers) {
+          if (!['pending', 'countered', 'accepted'].includes(o.status)) continue;
+          const partnerId =
+            o.initiator_id === userId ? o.responder_id : o.initiator_id;
+          if (
+            partnerId &&
+            partnerId !== userId &&
+            !notifiedOfferPartners.has(partnerId)
+          ) {
+            notifiedOfferPartners.add(partnerId);
+            notificationsToSend.push({
+              recipientId: partnerId,
+              type: NotificationType.OFFER_CANCELLED,
+              title: 'Proposition annulée — Annonce supprimée',
+              body: `L'annonce « ${listing.title} » a été supprimée par son propriétaire.`,
+              data: { offerId: o.id, route: `/chat/${o.id}` },
+            });
+          }
+        }
+      }
+
       const fkRefs: Array<{ table_name: string; column_name: string }> =
         await manager.query(
           `SELECT tc.table_name, kcu.column_name
@@ -266,6 +367,12 @@ export class ListingsService {
       }
       await manager.delete(Listing, { id: listingId });
     });
+
+    for (const n of notificationsToSend) {
+      this.notificationsService
+        .notifyUser(n.recipientId, n.type, n.title, n.body, n.data)
+        .catch(() => {});
+    }
 
     return { message: 'Listing deleted successfully' };
   }

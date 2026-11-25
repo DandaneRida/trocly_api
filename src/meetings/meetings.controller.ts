@@ -74,6 +74,23 @@ export class MeetingsController {
   }
 
   /**
+   * Cancel a proposed or accepted meeting and notify partner
+   * POST /meetings/:id/cancel
+   */
+  @Post(':id/cancel')
+  async cancelMeeting(
+    @Param('id') meetingId: string,
+    @Body() body: { reason?: string },
+    @Request() req: any,
+  ) {
+    return this.meetingsService.cancelMeeting(
+      meetingId,
+      req.user.sub,
+      body?.reason,
+    );
+  }
+
+  /**
    * D3 - Scan partner QR code
    * POST /meetings/qr/scan
    */
