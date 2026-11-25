@@ -1,0 +1,48 @@
+name: Trocly API CI
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: troc
+          POSTGRES_PASSWORD: troc
+          POSTGRES_DB: trocly_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build NestJS application
+        run: npm run build
+
+      - name: Run Unit Tests
+        env:
+          NODE_OPTIONS: --experimental-vm-modules
+          JWT_SECRET: ci-jwt-secret
+        run: npx jest --runInBand

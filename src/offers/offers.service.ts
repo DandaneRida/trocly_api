@@ -63,6 +63,14 @@ export class OffersService implements OnModuleInit {
           JOIN listings l ON l.id = oi.listing_id
           WHERE oi.offer_id = o.id
         ) < 2;
+
+      -- Phase 3.2: Composite & Full-Text GIN PostgreSQL indexes
+      CREATE INDEX IF NOT EXISTS idx_listings_city_status_created
+        ON listings (city_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_listings_search_gin
+        ON listings USING GIN (to_tsvector('french', coalesce(title, '') || ' ' || coalesce(description, '')));
+      CREATE INDEX IF NOT EXISTS idx_offers_participants_status
+        ON offers (initiator_id, responder_id, status);
     `);
   }
 
@@ -274,6 +282,7 @@ export class OffersService implements OnModuleInit {
     data: {
       counterListingIds: string[];
       counterSoulte?: number;
+      soultePossible?: boolean;
       message?: string;
     },
   ): Promise<Offer> {
@@ -290,21 +299,42 @@ export class OffersService implements OnModuleInit {
     originalOffer.status = OfferStatus.COUNTERED;
     await this.offerRepo.save(originalOffer);
 
+    const soulteVal =
+      data.soultePossible === true
+        ? 1
+        : data.counterSoulte && data.counterSoulte > 0
+          ? data.counterSoulte
+          : undefined;
+
     const counterOffer = this.offerRepo.create({
       initiator: { id: responderId } as any,
       responder: { id: originalOffer.initiator.id } as any,
       parentOfferId: originalOfferId,
-      soulte:
-        data.counterSoulte && data.counterSoulte > 0
-          ? data.counterSoulte
-          : undefined,
+      soulte: soulteVal,
       message: data.message?.trim() || '',
       status: OfferStatus.PENDING,
     });
 
     const savedCounter = await this.offerRepo.save(counterOffer);
 
-    for (const listingId of data.counterListingIds || []) {
+    // Keep original initiator items if counterListingIds only specifies responder's side, or merge unique items
+    const existingInitiatorIds = (originalOffer.items || [])
+      .filter((i) => i.listing?.user?.id === originalOffer.initiator?.id)
+      .map((i) => i.listing.id);
+    const existingResponderIds = (originalOffer.items || [])
+      .filter((i) => i.listing?.user?.id === responderId)
+      .map((i) => i.listing.id);
+
+    const mergedIds = Array.from(
+      new Set([
+        ...(data.counterListingIds && data.counterListingIds.length > 0
+          ? data.counterListingIds
+          : existingResponderIds),
+        ...existingInitiatorIds,
+      ]),
+    );
+
+    for (const listingId of mergedIds) {
       const offerItem = this.offerItemRepo.create({
         offer: { id: savedCounter.id } as any,
         listing: { id: listingId } as any,

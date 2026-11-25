@@ -89,6 +89,23 @@ export class ListingsController {
   }
 
   /**
+   * Phase 2.1 - Smart Matching (« Double Coïncidence des Besoins »)
+   * GET /listings/matches
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('matches')
+  async getSmartMatches(@Request() req: any, @Query('limit') limit = '10') {
+    const userId = req.user?.sub;
+    if (!userId) {
+      throw new BadRequestException('User identification missing from token');
+    }
+    return this.listingsService.getSmartMatches(
+      userId,
+      Math.min(parseInt(limit, 10) || 10, 30),
+    );
+  }
+
+  /**
    * Get single listing details
    * GET /listings/:id
    */

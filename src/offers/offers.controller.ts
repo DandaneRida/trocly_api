@@ -76,6 +76,7 @@ export class OffersController {
     body: {
       counterListingIds: string[];
       counterSoulte?: number;
+      soultePossible?: boolean;
       message?: string;
     },
     @Request() req: any,

@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { User } from '../users/user.entity';
 import { Listing, ListingStatus } from '../listings/listing.entity';
 import { Offer, OfferStatus } from '../offers/offer.entity';
@@ -12,7 +12,7 @@ import { Report, ReportStatus } from '../reports/report.entity';
  * E4 - Admin dashboard with statistics
  */
 @Injectable()
-export class AdminService {
+export class AdminService implements OnModuleInit {
   constructor(
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(Listing) private listingRepo: Repository<Listing>,
@@ -20,7 +20,29 @@ export class AdminService {
     @InjectRepository(Meeting) private meetingRepo: Repository<Meeting>,
     @InjectRepository(Review) private reviewRepo: Repository<Review>,
     @InjectRepository(Report) private reportRepo: Repository<Report>,
+    private dataSource: DataSource,
   ) {}
+
+  async onModuleInit() {
+    await this.dataSource
+      .query(`ALTER TYPE report_status ADD VALUE IF NOT EXISTS 'pending'`)
+      .catch(() => {});
+    await this.dataSource
+      .query(`ALTER TYPE report_status ADD VALUE IF NOT EXISTS 'reviewed'`)
+      .catch(() => {});
+    await this.dataSource
+      .query(`ALTER TYPE report_status ADD VALUE IF NOT EXISTS 'resolved'`)
+      .catch(() => {});
+    await this.dataSource
+      .query(`
+        ALTER TABLE reports
+          ADD COLUMN IF NOT EXISTS reported_listing_id uuid,
+          ADD COLUMN IF NOT EXISTS reported_user_id uuid,
+          ADD COLUMN IF NOT EXISTS description text,
+          ADD COLUMN IF NOT EXISTS admin_notes text;
+      `)
+      .catch(() => {});
+  }
 
   /**
    * E4 - Get admin dashboard statistics
@@ -189,7 +211,6 @@ export class AdminService {
    * Get popular categories
    */
   async getPopularCategories(limit = 10): Promise<any[]> {
-    // TODO: Implement with proper query
     const listings = await this.listingRepo.find();
     const categoryCount = new Map();
 
@@ -204,5 +225,26 @@ export class AdminService {
       .sort((a, b) => b[1] - a[1])
       .slice(0, limit)
       .map(([category, count]) => ({ category, count }));
+  }
+
+  async resolveReport(
+    reportId: string,
+    status: ReportStatus,
+    archiveListing = false,
+  ): Promise<Report | null> {
+    const report = await this.reportRepo.findOne({
+      where: { id: reportId },
+      relations: { reportedListing: true },
+    });
+    if (!report) return null;
+    report.status = status;
+    await this.reportRepo.save(report);
+
+    if (archiveListing && report.reportedListing?.id) {
+      await this.listingRepo.update(report.reportedListing.id, {
+        status: ListingStatus.ARCHIVED,
+      });
+    }
+    return report;
   }
 }

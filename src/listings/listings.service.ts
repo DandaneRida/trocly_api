@@ -395,6 +395,108 @@ export class ListingsService {
   }
 
   /**
+   * Phase 2.1 - Smart Matching (« Double Coïncidence des Besoins »)
+   * Croise les annonces actives de l'utilisateur et ses souhaits avec les annonces actives des autres membres.
+   */
+  async getSmartMatches(userId: string, limit = 10): Promise<any[]> {
+    const myActive = await this.listingRepo.find({
+      where: { user: { id: userId }, status: ListingStatus.ACTIVE },
+      relations: { city: true },
+    });
+
+    const candidates = await this.listingRepo.find({
+      where: { status: ListingStatus.ACTIVE },
+      relations: { user: true, city: true },
+      order: { createdAt: 'DESC' },
+      take: 120,
+    });
+
+    const others = candidates.filter((c) => c.user?.id !== userId);
+    if (myActive.length === 0) {
+      return others.slice(0, limit).map((c) => ({
+        ...c,
+        matchScore: 60,
+        matchReason: 'Populaire près de vous',
+      }));
+    }
+
+    const tokenize = (txt: string): string[] =>
+      txt
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .split(/[^a-z0-9]+/)
+        .filter((w) => w.length >= 3);
+
+    const myOfferTokens = new Set<string>();
+    const myWishTokens = new Set<string>();
+    const myCityIds = new Set<number>();
+    const myCategories = new Set<string>();
+
+    for (const m of myActive) {
+      if (m.city?.id) myCityIds.add(m.city.id);
+      if (m.category) myCategories.add(m.category.toLowerCase());
+      for (const t of tokenize(`${m.title} ${m.category}`)) {
+        myOfferTokens.add(t);
+      }
+      const wishes = Array.isArray(m.attributes?.wishes)
+        ? m.attributes.wishes.join(' ')
+        : '';
+      for (const t of tokenize(wishes)) {
+        if (t !== 'ouvert' && t !== 'propositions' && t !== 'echange') {
+          myWishTokens.add(t);
+        }
+      }
+    }
+
+    const scored = others.map((cand) => {
+      let score = 20;
+      const reasons: string[] = [];
+
+      const candTitleTokens = tokenize(`${cand.title} ${cand.description || ''} ${cand.category}`);
+      const candWishesRaw = Array.isArray(cand.attributes?.wishes)
+        ? cand.attributes.wishes.join(' ')
+        : '';
+      const candWishTokens = tokenize(candWishesRaw);
+
+      // 1. I want what they have
+      const matchesMyWish = candTitleTokens.some((t) => myWishTokens.has(t));
+      // 2. They want what I have
+      const wantsMyItem = candWishTokens.some((t) => myOfferTokens.has(t));
+
+      if (matchesMyWish && wantsMyItem) {
+        score += 55;
+        reasons.push('Double coïncidence parfaite');
+      } else if (wantsMyItem) {
+        score += 35;
+        reasons.push('Cherche un objet comme le vôtre');
+      } else if (matchesMyWish) {
+        score += 35;
+        reasons.push('Correspond à vos souhaits');
+      }
+
+      if (cand.city?.id && myCityIds.has(cand.city.id)) {
+        score += 20;
+        reasons.push(`Même ville (${cand.city.name})`);
+      }
+
+      if (cand.category && myCategories.has(cand.category.toLowerCase())) {
+        score += 10;
+      }
+
+      return {
+        ...cand,
+        matchScore: Math.min(score, 99),
+        matchReason:
+          reasons.length > 0 ? reasons.join(' · ') : 'Compatible dans votre région',
+      };
+    });
+
+    scored.sort((a, b) => b.matchScore - a.matchScore);
+    return scored.slice(0, limit);
+  }
+
+  /**
    * Get categories (for dropdown filters)
    */
   async getCategories(): Promise<string[]> {

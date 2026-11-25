@@ -16,6 +16,7 @@ describe('Trocly Full Integration Flow (e2e)', () => {
   let meetingId = '';
   let qrA = '';
   let qrB = '';
+  let validCityId = 1;
 
   const phoneA = `+212699${Math.floor(100000 + Math.random() * 899999)}`;
   const phoneB = `+212698${Math.floor(100000 + Math.random() * 899999)}`;
@@ -30,7 +31,9 @@ describe('Trocly Full Integration Flow (e2e)', () => {
   }, 30000);
 
   afterAll(async () => {
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   async function registerUser(phoneNumber: string, displayName: string) {
@@ -49,7 +52,7 @@ describe('Trocly Full Integration Flow (e2e)', () => {
       const c = await request(app.getHttpServer())
         .post('/auth/complete-profile')
         .set('Authorization', `Bearer ${tempToken}`)
-        .send({ displayName, cityId: 1 })
+        .send({ displayName, cityId: validCityId })
         .expect(201);
       return c.body.accessToken as string;
     }
@@ -60,6 +63,7 @@ describe('Trocly Full Integration Flow (e2e)', () => {
     const res = await request(app.getHttpServer()).get('/cities').expect(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body.length).toBeGreaterThanOrEqual(5);
+    validCityId = res.body[0].id;
   });
 
   it('2. Registers two distinct users via OTP + JWT', async () => {
@@ -80,7 +84,7 @@ describe('Trocly Full Integration Flow (e2e)', () => {
         category: 'Sport',
         condition: 'tres_bon',
         estimatedValue: 0,
-        cityId: 1,
+        cityId: validCityId,
         photos: [],
       })
       .expect(201);
@@ -96,7 +100,7 @@ describe('Trocly Full Integration Flow (e2e)', () => {
         category: 'Sport',
         condition: 'tres_bon',
         estimatedValue: 0,
-        cityId: 1,
+        cityId: validCityId,
         photos: [],
       })
       .expect(409);
@@ -110,7 +114,7 @@ describe('Trocly Full Integration Flow (e2e)', () => {
         category: 'Électronique',
         condition: 'bon',
         estimatedValue: 0,
-        cityId: 1,
+        cityId: validCityId,
         photos: [],
       })
       .expect(201);
@@ -241,5 +245,47 @@ describe('Trocly Full Integration Flow (e2e)', () => {
       .send({ meetingId, rating: 5, comment: 'Parfait', tags: ['Objet conforme'] })
       .expect(201);
     expect(rev2.body.isRevealed).toBe(true);
+  });
+
+  it('7. Syncs Favorites, computes Smart Matches, and returns Admin KPIs', async () => {
+    // Create a fresh active listing for User A to favorite & match
+    const newListing = await request(app.getHttpServer())
+      .post('/listings')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        title: `Sneakers Test ${Date.now()}`,
+        description: 'Pointure 42',
+        category: 'Vêtements',
+        condition: 'neuf',
+        estimatedValue: 0,
+        cityId: validCityId,
+        photos: [],
+        attributes: { wishes: ['Veste'] },
+      })
+      .expect(201);
+
+    const favAdd = await request(app.getHttpServer())
+      .post(`/favorites/${newListing.body.id}`)
+      .set('Authorization', `Bearer ${tokenB}`)
+      .expect(201);
+    expect(favAdd.body.favorited).toBe(true);
+
+    const favList = await request(app.getHttpServer())
+      .get('/favorites')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .expect(200);
+    expect(favList.body.some((l: any) => l.id === newListing.body.id)).toBe(true);
+
+    const matches = await request(app.getHttpServer())
+      .get('/listings/matches')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .expect(200);
+    expect(Array.isArray(matches.body)).toBe(true);
+
+    const adminDash = await request(app.getHttpServer())
+      .get('/admin/dashboard')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(adminDash.body.users.total).toBeGreaterThanOrEqual(2);
   });
 });

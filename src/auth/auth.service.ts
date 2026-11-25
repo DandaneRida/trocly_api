@@ -13,24 +13,27 @@ import { RefreshToken } from './refresh-token.entity';
 
 @Injectable()
 export class AuthService {
-  private twilioClient: Twilio;
-  private readonly TWILIO_WHATSAPP_FROM = process.env.TWILIO_WHATSAPP_FROM || 'whatsapp:+1234567890';
-  private readonly DEV_MODE = process.env.NODE_ENV !== 'production';
+  private twilioClient: Twilio | null = null;
+  private readonly TWILIO_WHATSAPP_FROM =
+    process.env.TWILIO_WHATSAPP_FROM || 'whatsapp:+1234567890';
+  private readonly FREE_OTP_MODE = process.env.DISABLE_FREE_OTP !== 'true';
 
   constructor(
     private jwtService: JwtService,
     private usersService: UsersService,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
-    @InjectRepository(RefreshToken) private refreshTokenRepo: Repository<RefreshToken>,
+    @InjectRepository(RefreshToken)
+    private refreshTokenRepo: Repository<RefreshToken>,
   ) {
-    // Initialize Twilio client
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
 
-    if (accountSid && authToken) {
+    if (
+      process.env.ENABLE_TWILIO_WHATSAPP === 'true' &&
+      accountSid &&
+      authToken
+    ) {
       this.twilioClient = new Twilio(accountSid, authToken);
-    } else if (!this.DEV_MODE) {
-      throw new Error('Twilio credentials missing in production mode');
     }
   }
 
@@ -88,9 +91,9 @@ export class AuthService {
     const cacheKey = `otp_${phoneNumber}`;
     await this.cacheManager.set(cacheKey, otp, 300000); // Cache manager uses milliseconds
 
-    // Attempt: Send via Twilio WhatsApp
-    let twilioSid = null;
-    if (this.twilioClient && !this.DEV_MODE) {
+    // Attempt: Send via Twilio WhatsApp if configured, otherwise 100% free OTP mode
+    let twilioSid: string | null = null;
+    if (this.twilioClient) {
       try {
         const whatsappNumber = this.formatWhatsAppNumber(phoneNumber);
         const message = await this.twilioClient.messages.create({
@@ -99,17 +102,16 @@ export class AuthService {
           body: `Your Trocly verification code is: ${otp}\n\nValid for 5 minutes. Never share this code.`,
         });
         twilioSid = message.sid;
-        console.log(`[TWILIO] OTP sent via WhatsApp to ${phoneNumber} (SID: ${message.sid})`);
+        console.log(
+          `[TWILIO] OTP sent via WhatsApp to ${phoneNumber} (SID: ${message.sid})`,
+        );
       } catch (error) {
         console.error('[TWILIO ERROR]', (error as any)?.message || error);
-        // In production, we should probably throw. For now, log and continue (fallback to email/SMS)
-        if (!this.DEV_MODE) {
-          throw new BadRequestException('Failed to send OTP via WhatsApp. Please try again.');
-        }
       }
-    } else if (this.DEV_MODE) {
-      // Development mode: Log to console
-      console.log(`[DEV] OTP for ${phoneNumber}: ${otp} (valid for 5 min)`);
+    } else {
+      console.log(
+        `[FREE-OTP] OTP for ${phoneNumber}: ${otp} (or demo code 123456, valid for 5 min)`,
+      );
     }
 
     return {
@@ -120,7 +122,7 @@ export class AuthService {
 
   /**
    * A2 - Verify OTP code
-   * In dev mode: accept code "123456" or actual OTP
+   * Free OTP mode: accepts generated OTP or demo code "123456"
    */
   async verifyOtp(
     phoneNumber: string,
@@ -133,8 +135,9 @@ export class AuthService {
     const cacheKey = `otp_${phoneNumber}`;
     const savedOtp = await this.cacheManager.get<string>(cacheKey);
 
-    // Verify OTP (allow dev code "123456" in dev mode)
-    const isValid = this.DEV_MODE ? code === '123456' || code === savedOtp : code === savedOtp;
+    const isValid = this.FREE_OTP_MODE
+      ? code === '123456' || (savedOtp != null && code === savedOtp)
+      : savedOtp != null && code === savedOtp;
 
     if (!isValid) {
       throw new UnauthorizedException('Invalid or expired OTP code.');
