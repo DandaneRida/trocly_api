@@ -246,8 +246,24 @@ export class ListingsService {
            AND status IN ('pending', 'countered')`,
         [listingId],
       );
-      await manager.query(`DELETE FROM offer_items WHERE listing_id = $1`, [listingId]);
-      await manager.query(`DELETE FROM reports WHERE reported_listing_id = $1`, [listingId]);
+      const fkRefs: Array<{ table_name: string; column_name: string }> =
+        await manager.query(
+          `SELECT tc.table_name, kcu.column_name
+           FROM information_schema.table_constraints tc
+           JOIN information_schema.key_column_usage kcu
+             ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+           JOIN information_schema.constraint_column_usage ccu
+             ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+           WHERE tc.constraint_type = 'FOREIGN KEY'
+             AND tc.table_schema = 'public'
+             AND ccu.table_name = 'listings'`,
+        );
+      for (const { table_name, column_name } of fkRefs) {
+        await manager.query(
+          `DELETE FROM "${table_name}" WHERE "${column_name}" = $1`,
+          [listingId],
+        );
+      }
       await manager.delete(Listing, { id: listingId });
     });
 
