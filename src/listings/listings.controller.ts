@@ -166,6 +166,7 @@ export class ListingsController {
       category: string;
       condition: string;
       estimatedValue: number;
+      cityId: number;
       photos: string[];
       attributes: Record<string, any>;
     }>,

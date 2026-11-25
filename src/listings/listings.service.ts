@@ -177,6 +177,7 @@ export class ListingsService {
       category: string;
       condition: string;
       estimatedValue: number;
+      cityId: number;
       photos: string[];
       attributes: Record<string, any>;
     }>,
@@ -194,6 +195,11 @@ export class ListingsService {
     if (data.category !== undefined) listing.category = data.category;
     if (data.condition !== undefined) listing.condition = data.condition;
     if (data.estimatedValue !== undefined) listing.estimatedValue = data.estimatedValue;
+    if (data.cityId !== undefined) {
+      const city = await this.cityRepo.findOne({ where: { id: data.cityId } });
+      if (!city) throw new BadRequestException('City not found');
+      listing.city = city;
+    }
     if (data.photos !== undefined) listing.photos = data.photos;
     if (data.attributes !== undefined) listing.attributes = { ...listing.attributes, ...data.attributes };
 
@@ -222,6 +228,8 @@ export class ListingsService {
 
   /**
    * B3 - Delete a listing (only by owner)
+   * Cleans up dependent offer_items (cancelling pending/countered offers) and reports first
+   * to prevent PostgreSQL FK violation 23503.
    */
   async deleteListing(listingId: string, userId: string): Promise<{ message: string }> {
     const listing = await this.getListingById(listingId);
@@ -231,7 +239,18 @@ export class ListingsService {
       throw new ForbiddenException('You can only delete your own listings');
     }
 
-    await this.listingRepo.remove(listing);
+    await this.listingRepo.manager.transaction(async (manager) => {
+      await manager.query(
+        `UPDATE offers SET status = 'cancelled'
+         WHERE id IN (SELECT offer_id FROM offer_items WHERE listing_id = $1)
+           AND status IN ('pending', 'countered')`,
+        [listingId],
+      );
+      await manager.query(`DELETE FROM offer_items WHERE listing_id = $1`, [listingId]);
+      await manager.query(`DELETE FROM reports WHERE reported_listing_id = $1`, [listingId]);
+      await manager.delete(Listing, { id: listingId });
+    });
+
     return { message: 'Listing deleted successfully' };
   }
 
