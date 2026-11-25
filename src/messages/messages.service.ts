@@ -191,7 +191,7 @@ export class MessagesService implements OnModuleInit {
       relations: {
         initiator: true,
         responder: true,
-        items: { listing: true },
+        items: { listing: { user: true } },
       },
       order: { updatedAt: 'DESC' },
       take: limit,
@@ -199,6 +199,21 @@ export class MessagesService implements OnModuleInit {
 
     const result: any[] = [];
     for (const offer of offers) {
+      const validItems = (offer.items || []).filter((i) => !!i.listing);
+      const hasInitiatorItem = validItems.some(
+        (i) => i.listing?.user?.id === offer.initiator?.id,
+      );
+      const hasResponderItem = validItems.some(
+        (i) => i.listing?.user?.id === offer.responder?.id,
+      );
+      if (
+        ['pending', 'countered', 'accepted'].includes(offer.status) &&
+        (validItems.length < 2 || !hasInitiatorItem || !hasResponderItem)
+      ) {
+        offer.status = 'cancelled' as any;
+        await this.offerRepo.save(offer);
+      }
+
       const lastMsg = await this.messageRepo.findOne({
         where: { offer: { id: offer.id } },
         relations: { sender: true },
@@ -213,7 +228,7 @@ export class MessagesService implements OnModuleInit {
       });
       const otherUser =
         offer.initiator?.id === userId ? offer.responder : offer.initiator;
-      const summaryTitles = (offer.items || [])
+      const summaryTitles = validItems
         .map((i) => i.listing?.title)
         .filter(Boolean);
 
@@ -229,7 +244,12 @@ export class MessagesService implements OnModuleInit {
               phone: otherUser.whatsappNumber,
             }
           : { id: '', displayName: 'Membre Trocly' },
-        itemSummary: summaryTitles.join(' ⇄ '),
+        itemSummary:
+          summaryTitles.length >= 2
+            ? summaryTitles.join(' ⇄ ')
+            : offer.status === 'cancelled'
+              ? 'Annonce supprimée · Échange annulé'
+              : summaryTitles.join(' ⇄ '),
         lastMessage:
           lastMsg?.content ||
           offer.message ||

@@ -49,6 +49,20 @@ export class OffersService implements OnModuleInit {
       DO $$ BEGIN
         ALTER TABLE offer_items ALTER COLUMN side DROP NOT NULL;
       EXCEPTION WHEN undefined_column THEN NULL; END $$;
+      DO $$ BEGIN
+        ALTER TYPE offers_status_enum ADD VALUE IF NOT EXISTS 'cancelled';
+      EXCEPTION WHEN undefined_object THEN NULL; END $$;
+
+      -- Auto-cancel any open/accepted offers missing at least 2 existing listings
+      UPDATE offers o
+      SET status = 'cancelled'
+      WHERE o.status IN ('pending', 'countered', 'accepted')
+        AND (
+          SELECT COUNT(*)
+          FROM offer_items oi
+          JOIN listings l ON l.id = oi.listing_id
+          WHERE oi.offer_id = o.id
+        ) < 2;
     `);
   }
 
@@ -166,9 +180,37 @@ export class OffersService implements OnModuleInit {
   async getOfferById(offerId: string): Promise<Offer> {
     const offer = await this.offerRepo.findOne({
       where: { id: offerId },
-      relations: { initiator: true, responder: true, items: { listing: true } },
+      relations: {
+        initiator: true,
+        responder: true,
+        items: { listing: { user: true } },
+      },
     });
     if (!offer) throw new NotFoundException('Offre introuvable');
+
+    if (
+      offer.status === OfferStatus.PENDING ||
+      offer.status === OfferStatus.COUNTERED ||
+      offer.status === OfferStatus.ACCEPTED
+    ) {
+      const validItems = (offer.items || []).filter((i) => !!i.listing);
+      const hasInitiatorItem = validItems.some(
+        (i) => i.listing?.user?.id === offer.initiator?.id,
+      );
+      const hasResponderItem = validItems.some(
+        (i) => i.listing?.user?.id === offer.responder?.id,
+      );
+      if (
+        validItems.length < 2 ||
+        (offer.initiator?.id &&
+          offer.responder?.id &&
+          (!hasInitiatorItem || !hasResponderItem))
+      ) {
+        offer.status = OfferStatus.CANCELLED;
+        await this.offerRepo.save(offer);
+      }
+    }
+
     return offer;
   }
 

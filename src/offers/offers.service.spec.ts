@@ -99,7 +99,11 @@ describe('OffersService (Unit)', () => {
       status: OfferStatus.PENDING,
       initiator: { id: 'user-a' },
       responder: { id: 'user-b' },
-      items: [],
+      items: [
+        { listing: { id: 'listing-b', user: { id: 'user-b' } } },
+        { listing: { id: 'listing-a1', user: { id: 'user-a' } } },
+        { listing: { id: 'listing-a2', user: { id: 'user-a' } } },
+      ],
     });
 
     const result = await service.createOffer('user-a', {
@@ -126,10 +130,28 @@ describe('OffersService (Unit)', () => {
       status: OfferStatus.PENDING,
       initiator: { id: 'user-a' },
       responder: { id: 'user-b' },
+      items: [
+        { listing: { id: 'l-a', user: { id: 'user-a' } } },
+        { listing: { id: 'l-b', user: { id: 'user-b' } } },
+      ],
     });
 
     await expect(service.acceptOffer('offer-1', 'user-a')).rejects.toThrow(
       ForbiddenException,
     );
+  });
+
+  it('auto-cancels an accepted offer when a listing in the exchange has been deleted', async () => {
+    offerRepo.findOne.mockResolvedValue({
+      id: 'offer-orphan',
+      status: OfferStatus.ACCEPTED,
+      initiator: { id: 'user-a' },
+      responder: { id: 'user-b' },
+      items: [{ listing: { id: 'l-a', user: { id: 'user-a' } } }],
+    });
+
+    const offer = await service.getOfferById('offer-orphan');
+    expect(offer.status).toBe(OfferStatus.CANCELLED);
+    expect(offerRepo.save).toHaveBeenCalled();
   });
 });

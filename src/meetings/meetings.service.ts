@@ -54,8 +54,17 @@ export class MeetingsService implements OnModuleInit {
           qr_payload_initiator = NULL,
           qr_payload_responder = NULL
       WHERE m.status IN ('proposed', 'accepted')
-        AND NOT EXISTS (
-          SELECT 1 FROM offer_items oi WHERE oi.offer_id = m.offer_id
+        AND (
+          (
+            SELECT COUNT(*)
+            FROM offer_items oi
+            JOIN listings l ON l.id = oi.listing_id
+            WHERE oi.offer_id = m.offer_id
+          ) < 2
+          OR EXISTS (
+            SELECT 1 FROM offers o
+            WHERE o.id = m.offer_id AND o.status IN ('cancelled', 'rejected')
+          )
         );
       DO $$ BEGIN
         ALTER TABLE meetings ALTER COLUMN negotiation_id DROP NOT NULL;
@@ -124,7 +133,11 @@ export class MeetingsService implements OnModuleInit {
     let responderId = explicitResponderId;
     const offer = await this.offerRepo.findOne({
       where: { id: offerId },
-      relations: { initiator: true, responder: true },
+      relations: {
+        initiator: true,
+        responder: true,
+        items: { listing: { user: true } },
+      },
     });
 
     if (offer) {
@@ -132,6 +145,20 @@ export class MeetingsService implements OnModuleInit {
         offer.initiator?.id === proposerId || offer.responder?.id === proposerId;
       if (!isParticipant) {
         throw new ForbiddenException('Vous ne participez pas à cette offre');
+      }
+      const validItems = (offer.items || []).filter((i) => !!i.listing);
+      const hasInitiatorItem = validItems.some(
+        (i) => i.listing?.user?.id === offer.initiator?.id,
+      );
+      const hasResponderItem = validItems.some(
+        (i) => i.listing?.user?.id === offer.responder?.id,
+      );
+      if (validItems.length < 2 || !hasInitiatorItem || !hasResponderItem) {
+        offer.status = 'cancelled' as any;
+        await this.offerRepo.save(offer);
+        throw new BadRequestException(
+          'Impossible de planifier un rendez-vous : une annonce de cet échange a été supprimée',
+        );
       }
       if (offer.status !== 'accepted') {
         throw new BadRequestException(
