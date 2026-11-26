@@ -25,7 +25,7 @@ export class Report {
   @JoinColumn({ name: 'reporter_id' })
   reporter: User;
 
-  @Column({ name: 'reported_user_id', nullable: true })
+  @Column({ name: 'reported_user_id', type: 'uuid', nullable: true })
   reportedUserId: string; // Can report a user or listing
 
   @ManyToOne(() => Listing, { nullable: true })

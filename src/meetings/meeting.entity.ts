@@ -23,7 +23,7 @@ export class Meeting {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ name: 'offer_id' })
+  @Column({ name: 'offer_id', type: 'uuid' })
   offerId: string;
 
   @ManyToOne(() => User)
@@ -65,13 +65,13 @@ export class Meeting {
   @Column({ name: 'scanned_at', type: 'timestamptz', nullable: true })
   scannedAt: Date;
 
-  @Column({ name: 'scanned_by_id', nullable: true })
+  @Column({ name: 'scanned_by_id', type: 'uuid', nullable: true })
   scannedById: string;
 
   @Column({ name: 'cancel_reason', type: 'text', nullable: true })
   cancelReason: string | null;
 
-  @Column({ name: 'cancelled_by_id', type: 'varchar', nullable: true })
+  @Column({ name: 'cancelled_by_id', type: 'uuid', nullable: true })
   cancelledById: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })

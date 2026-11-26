@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -12,12 +12,37 @@ import { RefreshToken } from './refresh-token.entity';
 import { JwtStrategy } from './jwt.strategy';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
+const cacheLogger = new Logger('CacheConfig');
+
 @Module({
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
     TypeOrmModule.forFeature([RefreshToken]),
     UsersModule,
-    CacheModule.register(),
+    CacheModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redisHost = (config.get<string>('REDIS_HOST') || '').trim();
+        const bullRedisUrl = (config.get<string>('BULL_REDIS_URL') || '').trim();
+        const isLocalRedis =
+          !redisHost ||
+          redisHost === 'localhost' ||
+          redisHost === '127.0.0.1' ||
+          bullRedisUrl.includes('localhost') ||
+          bullRedisUrl.includes('127.0.0.1');
+
+        if (isLocalRedis) {
+          cacheLogger.log(
+            'No external Redis configured — using in-memory cache store (skipping localhost:6379)',
+          );
+        }
+        // Always provide a non-blocking in-memory cache store so missing Redis never causes ECONNREFUSED at startup
+        return {
+          ttl: 600_000,
+        };
+      },
+    }),
     JwtModule.registerAsync({
       global: true,
       imports: [ConfigModule],

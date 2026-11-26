@@ -4,38 +4,14 @@ dotenv.config();
 import { DataSource } from 'typeorm';
 import { ProductionIndexesAndSchema1795620000000 } from './migrations/1795620000000-ProductionIndexesAndSchema';
 import { AlignReportsSchema1795620000001 } from './migrations/1795620000001-AlignReportsSchema';
-
-const dbUrl = process.env.DATABASE_URL || '';
-const useDbSsl =
-  process.env.DB_SSL === 'true' ||
-  (Boolean(dbUrl) &&
-    !dbUrl.includes('localhost') &&
-    !dbUrl.includes('127.0.0.1'));
+import { buildMigrationDataSourceOptions } from './typeorm-config';
 
 const migrationsList = [
   ProductionIndexesAndSchema1795620000000,
   AlignReportsSchema1795620000001,
 ];
 
-const ds = new DataSource(
-  dbUrl
-    ? {
-        type: 'postgres',
-        url: dbUrl,
-        ssl: useDbSsl ? { rejectUnauthorized: false } : false,
-        migrations: migrationsList,
-      }
-    : {
-        type: 'postgres',
-        host: process.env.DB_HOST || 'localhost',
-        port: parseInt(process.env.DB_PORT || '5432'),
-        username: process.env.DB_USERNAME || 'troc',
-        password: process.env.DB_PASSWORD || 'troc',
-        database: process.env.DB_NAME || 'trocly_db',
-        ssl: useDbSsl ? { rejectUnauthorized: false } : false,
-        migrations: migrationsList,
-      },
-);
+const ds = new DataSource(buildMigrationDataSourceOptions(migrationsList));
 
 async function main() {
   await ds.initialize();

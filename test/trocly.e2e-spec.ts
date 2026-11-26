@@ -1,10 +1,14 @@
+import { jest } from '@jest/globals';
 import * as dotenv from 'dotenv';
 dotenv.config();
+
+jest.setTimeout(30000);
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { DataSource } from 'typeorm';
 
 describe('Trocly Full Integration Flow (e2e)', () => {
   let app: INestApplication;
@@ -32,6 +36,26 @@ describe('Trocly Full Integration Flow (e2e)', () => {
 
   afterAll(async () => {
     if (app) {
+      try {
+        const ds = app.get(DataSource);
+        const testUsers = await ds.query(
+          `SELECT id FROM users WHERE whatsapp_number IN ($1, $2)`,
+          [phoneA, phoneB],
+        );
+        const uids = testUsers.map((u: any) => u.id);
+        if (uids.length > 0) {
+          await ds.query(`DELETE FROM reviews WHERE reviewer_id = ANY($1) OR reviewee_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM meetings WHERE initiator_id = ANY($1) OR responder_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM messages WHERE sender_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM offer_items WHERE offer_id IN (SELECT id FROM offers WHERE initiator_id = ANY($1) OR responder_id = ANY($1))`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM offers WHERE initiator_id = ANY($1) OR responder_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM favorites WHERE user_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM notifications WHERE user_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM listings WHERE user_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM refresh_tokens WHERE user_id = ANY($1)`, [uids]).catch(() => {});
+          await ds.query(`DELETE FROM users WHERE id = ANY($1)`, [uids]).catch(() => {});
+        }
+      } catch {}
       await app.close();
     }
   });

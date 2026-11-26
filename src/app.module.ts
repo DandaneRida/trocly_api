@@ -2,11 +2,15 @@ import 'dotenv/config';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppService } from './app.service';
 import { HealthController } from './health/health.controller';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
+import {
+  buildTypeOrmModuleOptions,
+  initializeAndBootstrapDataSource,
+} from './database/typeorm-config';
 
 import { CitiesModule } from './cities/cities.module';
 import { AuthModule } from './auth/auth.module';
@@ -22,13 +26,6 @@ import { UploadModule } from './upload/upload.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { FavoritesModule } from './favorites/favorites.module';
 
-const dbUrl = process.env.DATABASE_URL || '';
-const useDbSsl =
-  process.env.DB_SSL === 'true' ||
-  (Boolean(dbUrl) &&
-    !dbUrl.includes('localhost') &&
-    !dbUrl.includes('127.0.0.1'));
-
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -36,29 +33,31 @@ const useDbSsl =
       envFilePath: '.env',
     }),
     ScheduleModule.forRoot(),
-    TypeOrmModule.forRoot(
-      dbUrl
-        ? {
-            type: 'postgres',
-            url: dbUrl,
-            ssl: useDbSsl ? { rejectUnauthorized: false } : false,
-            autoLoadEntities: true,
-            synchronize: false,
-            logging: false,
-          }
-        : {
-            type: 'postgres',
-            host: process.env.DB_HOST || 'localhost',
-            port: parseInt(process.env.DB_PORT || '5432'),
-            username: process.env.DB_USERNAME || 'troc',
-            password: process.env.DB_PASSWORD || 'troc',
-            database: process.env.DB_NAME || 'trocly_db',
-            ssl: useDbSsl ? { rejectUnauthorized: false } : false,
-            autoLoadEntities: true,
-            synchronize: false,
-            logging: false,
-          },
-    ),
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        buildTypeOrmModuleOptions({
+          ...process.env,
+          DATABASE_URL:
+            config.get<string>('DATABASE_URL') ?? process.env.DATABASE_URL,
+          POSTGRES_URL:
+            config.get<string>('POSTGRES_URL') ?? process.env.POSTGRES_URL,
+          NEON_DATABASE_URL:
+            config.get<string>('NEON_DATABASE_URL') ??
+            process.env.NEON_DATABASE_URL,
+          DB_HOST: config.get<string>('DB_HOST') ?? process.env.DB_HOST,
+          DB_PORT: config.get<string>('DB_PORT') ?? process.env.DB_PORT,
+          DB_USERNAME:
+            config.get<string>('DB_USERNAME') ?? process.env.DB_USERNAME,
+          DB_PASSWORD:
+            config.get<string>('DB_PASSWORD') ?? process.env.DB_PASSWORD,
+          DB_NAME: config.get<string>('DB_NAME') ?? process.env.DB_NAME,
+          DB_SSL: config.get<string>('DB_SSL') ?? process.env.DB_SSL,
+        }),
+      dataSourceFactory: async (options) =>
+        initializeAndBootstrapDataSource(options),
+    }),
     CitiesModule,
     AuthModule,
     UsersModule,

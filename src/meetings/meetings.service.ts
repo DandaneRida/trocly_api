@@ -48,6 +48,9 @@ export class MeetingsService implements OnModuleInit {
       DO $$ BEGIN
         ALTER TYPE meetings_status_enum ADD VALUE IF NOT EXISTS 'cancelled';
       EXCEPTION WHEN undefined_object THEN NULL; END $$;
+      DO $$ BEGIN
+        ALTER TABLE meetings ALTER COLUMN offer_id TYPE uuid USING offer_id::uuid;
+      EXCEPTION WHEN others THEN NULL; END $$;
       UPDATE meetings m
       SET status = 'cancelled',
           cancel_reason = COALESCE(m.cancel_reason, 'Annonce supprimée'),
@@ -59,11 +62,11 @@ export class MeetingsService implements OnModuleInit {
             SELECT COUNT(*)
             FROM offer_items oi
             JOIN listings l ON l.id = oi.listing_id
-            WHERE oi.offer_id = m.offer_id
+            WHERE oi.offer_id::text = m.offer_id::text
           ) < 2
           OR EXISTS (
             SELECT 1 FROM offers o
-            WHERE o.id = m.offer_id AND o.status IN ('cancelled', 'rejected')
+            WHERE o.id::text = m.offer_id::text AND o.status IN ('cancelled', 'rejected')
           )
         );
       DO $$ BEGIN

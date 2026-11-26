@@ -23,7 +23,7 @@ export class Offer {
   @JoinColumn({ name: 'responder_id' })
   responder: User;
 
-  @Column({ name: 'parent_offer_id', nullable: true })
+  @Column({ name: 'parent_offer_id', type: 'uuid', nullable: true })
   parentOfferId: string; // For counter-offers
 
   @Column({ name: 'soulte', type: 'decimal', precision: 10, scale: 2, nullable: true })

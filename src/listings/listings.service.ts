@@ -276,7 +276,7 @@ export class ListingsService {
         }> = await manager.query(
           `SELECT id, offer_id, initiator_id, responder_id, proposed_location
            FROM meetings
-           WHERE offer_id = ANY($1)
+           WHERE offer_id::text = ANY($1::text[])
              AND status IN ('proposed', 'accepted')`,
           [offerIds],
         );
