@@ -20,7 +20,11 @@ describe('resolvePostgresCredentials', () => {
     expect(creds.username).toBe('neondb_owner');
     expect(creds.password).toBe('mySecret@123');
     expect(creds.database).toBe('neondb');
-    expect(creds.ssl).toEqual({ rejectUnauthorized: false });
+    expect(creds.ssl).toEqual({
+      rejectUnauthorized: false,
+      servername:
+        'ep-morning-frog-bgouxd4u-pooler.c-9.eu-central-1.aws.neon.tech',
+    });
   });
 
   it('strips accidental quotes/whitespace around DATABASE_URL', () => {
@@ -33,7 +37,11 @@ describe('resolvePostgresCredentials', () => {
       'ep-morning-frog-bgouxd4u-pooler.c-9.eu-central-1.aws.neon.tech',
     );
     expect(creds.database).toBe('trocly_prod');
-    expect(creds.ssl).toEqual({ rejectUnauthorized: false });
+    expect(creds.ssl).toEqual({
+      rejectUnauthorized: false,
+      servername:
+        'ep-morning-frog-bgouxd4u-pooler.c-9.eu-central-1.aws.neon.tech',
+    });
   });
 
   it('disables SSL for local PostgreSQL DATABASE_URL unless DB_SSL=true', () => {

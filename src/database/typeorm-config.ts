@@ -1,14 +1,18 @@
 import * as dns from 'dns';
+import * as net from 'net';
 import { Logger } from '@nestjs/common';
 import type { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { DataSource, type DataSourceOptions } from 'typeorm';
 
-// Prefer IPv4 in container environments (Docker/Abasthan) where IPv6 routes
-// are unavailable and Happy Eyeballs would throw AggregateError [ECONNREFUSED].
+// Prefer IPv4 and disable Node 20/22 Happy Eyeballs (autoSelectFamily) so
+// container environments without IPv6 routes never fail with AggregateError [ECONNREFUSED].
 try {
   dns.setDefaultResultOrder('ipv4first');
+  if (typeof net.setDefaultAutoSelectFamily === 'function') {
+    net.setDefaultAutoSelectFamily(false);
+  }
 } catch {
-  // Ignore on runtimes that do not support setDefaultResultOrder
+  // Ignore on runtimes that do not support these helpers
 }
 
 const dbLogger = new Logger('DatabaseConfig');
@@ -46,7 +50,7 @@ export function resolvePostgresCredentials(
   username: string;
   password: string;
   database: string;
-  ssl: { rejectUnauthorized: boolean } | false;
+  ssl: { rejectUnauthorized: boolean; servername?: string } | false;
   source: 'DATABASE_URL' | 'DB_HOST';
 } {
   const rawUrl = cleanEnvValue(
@@ -76,13 +80,19 @@ export function resolvePostgresCredentials(
         sslMode === 'no-verify' ||
         !isLocalDatabaseHost(host));
 
+    const sslOption = shouldUseSsl
+      ? net.isIP(host) === 0
+        ? { rejectUnauthorized: false, servername: host }
+        : { rejectUnauthorized: false }
+      : false;
+
     return {
       host,
       port,
       username,
       password,
       database,
-      ssl: shouldUseSsl ? { rejectUnauthorized: false } : false,
+      ssl: sslOption,
       source: 'DATABASE_URL',
     };
   }
@@ -100,13 +110,19 @@ export function resolvePostgresCredentials(
       host.includes('neon.tech') ||
       !isLocalDatabaseHost(host));
 
+  const sslOption = shouldUseSsl
+    ? net.isIP(host) === 0
+      ? { rejectUnauthorized: false, servername: host }
+      : { rejectUnauthorized: false }
+    : false;
+
   return {
     host,
     port,
     username,
     password,
     database,
-    ssl: shouldUseSsl ? { rejectUnauthorized: false } : false,
+    ssl: sslOption,
     source: 'DB_HOST',
   };
 }
@@ -184,7 +200,45 @@ export async function initializeAndBootstrapDataSource(
   if (!options) {
     throw new Error('DataSourceOptions are required');
   }
-  const dataSource = await new DataSource(options).initialize();
+
+  let effectiveOptions: DataSourceOptions = options;
+  const pgOpts = options as any;
+  const originalHost: string | undefined = pgOpts.host;
+
+  if (
+    pgOpts.type === 'postgres' &&
+    originalHost &&
+    !isLocalDatabaseHost(originalHost) &&
+    net.isIP(originalHost) === 0
+  ) {
+    try {
+      const { address } = await dns.promises.lookup(originalHost, {
+        family: 4,
+      });
+      if (address) {
+        effectiveOptions = {
+          ...pgOpts,
+          host: address,
+          ssl: pgOpts.ssl
+            ? {
+                ...(typeof pgOpts.ssl === 'object' ? pgOpts.ssl : {}),
+                rejectUnauthorized: false,
+                servername: originalHost,
+              }
+            : false,
+        };
+        dbLogger.log(
+          `Resolved ${originalHost} -> IPv4 ${address} (SNI=${originalHost})`,
+        );
+      }
+    } catch (err: any) {
+      dbLogger.warn(
+        `IPv4 lookup for ${originalHost} fell back to hostname: ${err?.message || err}`,
+      );
+    }
+  }
+
+  const dataSource = await new DataSource(effectiveOptions).initialize();
 
   const existingUsersTable = await dataSource.query(
     `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users' LIMIT 1`,

@@ -40,20 +40,20 @@ import { FavoritesModule } from './favorites/favorites.module';
         buildTypeOrmModuleOptions({
           ...process.env,
           DATABASE_URL:
-            config.get<string>('DATABASE_URL') ?? process.env.DATABASE_URL,
+            process.env.DATABASE_URL || config.get<string>('DATABASE_URL'),
           POSTGRES_URL:
-            config.get<string>('POSTGRES_URL') ?? process.env.POSTGRES_URL,
+            process.env.POSTGRES_URL || config.get<string>('POSTGRES_URL'),
           NEON_DATABASE_URL:
-            config.get<string>('NEON_DATABASE_URL') ??
-            process.env.NEON_DATABASE_URL,
-          DB_HOST: config.get<string>('DB_HOST') ?? process.env.DB_HOST,
-          DB_PORT: config.get<string>('DB_PORT') ?? process.env.DB_PORT,
+            process.env.NEON_DATABASE_URL ||
+            config.get<string>('NEON_DATABASE_URL'),
+          DB_HOST: process.env.DB_HOST || config.get<string>('DB_HOST'),
+          DB_PORT: process.env.DB_PORT || config.get<string>('DB_PORT'),
           DB_USERNAME:
-            config.get<string>('DB_USERNAME') ?? process.env.DB_USERNAME,
+            process.env.DB_USERNAME || config.get<string>('DB_USERNAME'),
           DB_PASSWORD:
-            config.get<string>('DB_PASSWORD') ?? process.env.DB_PASSWORD,
-          DB_NAME: config.get<string>('DB_NAME') ?? process.env.DB_NAME,
-          DB_SSL: config.get<string>('DB_SSL') ?? process.env.DB_SSL,
+            process.env.DB_PASSWORD || config.get<string>('DB_PASSWORD'),
+          DB_NAME: process.env.DB_NAME || config.get<string>('DB_NAME'),
+          DB_SSL: process.env.DB_SSL || config.get<string>('DB_SSL'),
         }),
       dataSourceFactory: async (options) =>
         initializeAndBootstrapDataSource(options),
@@ -81,4 +81,4 @@ import { FavoritesModule } from './favorites/favorites.module';
     },
   ],
 })
-export class AppModule {}
+export class AppModule { }

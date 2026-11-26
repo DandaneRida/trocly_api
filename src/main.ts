@@ -1,9 +1,13 @@
 import * as dns from 'dns';
+import * as net from 'net';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
 try {
   dns.setDefaultResultOrder('ipv4first');
+  if (typeof net.setDefaultAutoSelectFamily === 'function') {
+    net.setDefaultAutoSelectFamily(false);
+  }
 } catch {
   // Ignore if unsupported
 }
