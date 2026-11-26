@@ -1,8 +1,6 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
-import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getMessaging } from 'firebase-admin/messaging';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Notification } from './notification.entity';
@@ -12,6 +10,7 @@ import { DeviceToken } from './device-token.entity';
 export class NotificationsService implements OnModuleInit {
   private readonly logger = new Logger(NotificationsService.name);
   private fcmReady = false;
+  private fcmInitPromise: Promise<void> | null = null;
 
   constructor(
     @InjectRepository(Notification)
@@ -52,20 +51,45 @@ export class NotificationsService implements OnModuleInit {
       );
     `);
 
-    // Initialize Firebase Admin SDK from valid env JSON, valid env PEM, or local firebase-adminsdk.json
-    if (getApps().length === 0) {
-      const rawJson = (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
-      const projectId = (process.env.FIREBASE_PROJECT_ID || '').trim();
-      const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || '').trim();
-      const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(
-        /\\n/g,
-        '\n',
+    // Initialize Firebase Admin SDK lazily in the background so cold start stays fast
+    this.fcmInitPromise = this.initFcm();
+  }
+
+  private async initFcm(): Promise<void> {
+    const rawJson = (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+    const projectId = (process.env.FIREBASE_PROJECT_ID || '').trim();
+    const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || '').trim();
+    const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(
+      /\\n/g,
+      '\n',
+    );
+    const localSdkPath = path.join(process.cwd(), 'firebase-adminsdk.json');
+
+    const hasJson = rawJson.startsWith('{') && rawJson.includes('private_key');
+    const hasEnvVars =
+      Boolean(projectId) &&
+      Boolean(clientEmail) &&
+      privateKey.includes('BEGIN PRIVATE KEY');
+    const hasLocalFile = fs.existsSync(localSdkPath);
+
+    if (!hasJson && !hasEnvVars && !hasLocalFile) {
+      this.logger.log(
+        'FCM credentials not set — notifications persisted to DB (dev mode)',
       );
-      const localSdkPath = path.join(process.cwd(), 'firebase-adminsdk.json');
+      return;
+    }
+
+    try {
+      const { getApps, initializeApp, cert } = await import(
+        'firebase-admin/app'
+      );
+      if (getApps().length > 0) {
+        this.fcmReady = true;
+        return;
+      }
 
       let initialized = false;
-
-      if (rawJson.startsWith('{') && rawJson.includes('private_key')) {
+      if (hasJson) {
         try {
           const parsed = JSON.parse(rawJson);
           if (
@@ -78,16 +102,13 @@ export class NotificationsService implements OnModuleInit {
             this.logger.log('FCM initialized with FIREBASE_SERVICE_ACCOUNT_JSON');
           }
         } catch (e: any) {
-          this.logger.warn(`FIREBASE_SERVICE_ACCOUNT_JSON invalid: ${e?.message}`);
+          this.logger.warn(
+            `FIREBASE_SERVICE_ACCOUNT_JSON invalid: ${e?.message}`,
+          );
         }
       }
 
-      if (
-        !initialized &&
-        projectId &&
-        clientEmail &&
-        privateKey.includes('BEGIN PRIVATE KEY')
-      ) {
+      if (!initialized && hasEnvVars) {
         try {
           initializeApp({
             credential: cert({ projectId, clientEmail, privateKey }),
@@ -100,7 +121,7 @@ export class NotificationsService implements OnModuleInit {
         }
       }
 
-      if (!initialized && fs.existsSync(localSdkPath)) {
+      if (!initialized && hasLocalFile) {
         try {
           const serviceAccount = JSON.parse(
             fs.readFileSync(localSdkPath, 'utf-8'),
@@ -112,17 +133,13 @@ export class NotificationsService implements OnModuleInit {
             `FCM initialized via firebase-adminsdk.json (${serviceAccount.project_id})`,
           );
         } catch (e: any) {
-          this.logger.warn(`FCM firebase-adminsdk.json init failed: ${e?.message}`);
+          this.logger.warn(
+            `FCM firebase-adminsdk.json init failed: ${e?.message}`,
+          );
         }
       }
-
-      if (!initialized) {
-        this.logger.log(
-          'FCM credentials not set — notifications persisted to DB (dev mode)',
-        );
-      }
-    } else {
-      this.fcmReady = true;
+    } catch (e: any) {
+      this.logger.warn(`FCM lazy load failed: ${e?.message}`);
     }
   }
 
@@ -169,6 +186,7 @@ export class NotificationsService implements OnModuleInit {
           }
         }
         try {
+          const { getMessaging } = await import('firebase-admin/messaging');
           await getMessaging().sendEachForMulticast({
             tokens: tokens.map((t) => t.token),
             notification: { title, body },

@@ -7,12 +7,9 @@ import {
   UseGuards,
   Request,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { FavoritesService } from './favorites.service';
 
-@ApiTags('favorites')
-@ApiBearerAuth()
 @Controller('favorites')
 @UseGuards(JwtAuthGuard)
 export class FavoritesController {

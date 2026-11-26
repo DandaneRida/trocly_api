@@ -1,5 +1,4 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
-import sharp from 'sharp';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
@@ -59,6 +58,7 @@ export class UploadService {
     }
 
     try {
+      const { default: sharp } = await import('sharp');
       const optimized = await sharp(file.buffer)
         .rotate()
         .resize(1200, 1200, {

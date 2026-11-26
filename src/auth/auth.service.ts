@@ -8,7 +8,6 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
-import { Twilio } from 'twilio';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { createHash, randomBytes } from 'crypto';
@@ -20,7 +19,7 @@ import { RefreshToken } from './refresh-token.entity';
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private twilioClient: Twilio | null = null;
+  private twilioClient: any = null;
   private readonly TWILIO_WHATSAPP_FROM =
     process.env.TWILIO_WHATSAPP_FROM || 'whatsapp:+1234567890';
   private readonly FREE_OTP_MODE = process.env.DISABLE_FREE_OTP !== 'true';
@@ -31,17 +30,22 @@ export class AuthService {
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
     @InjectRepository(RefreshToken)
     private refreshTokenRepo: Repository<RefreshToken>,
-  ) {
+  ) {}
+
+  private async getTwilioClient(): Promise<any | null> {
+    if (this.twilioClient) return this.twilioClient;
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
-
     if (
       process.env.ENABLE_TWILIO_WHATSAPP === 'true' &&
       accountSid &&
       authToken
     ) {
+      const { Twilio } = await import('twilio');
       this.twilioClient = new Twilio(accountSid, authToken);
+      return this.twilioClient;
     }
+    return null;
   }
 
   /**
@@ -195,18 +199,21 @@ export class AuthService {
     let externalId: string | undefined = metaResult.messageId;
 
     // 2. Optional legacy fallback: Twilio WhatsApp if explicitly enabled and Meta wasn't used
-    if (!metaResult.sent && this.twilioClient) {
+    if (!metaResult.sent && process.env.ENABLE_TWILIO_WHATSAPP === 'true') {
       try {
-        const whatsappNumber = this.formatWhatsAppNumber(phoneNumber);
-        const message = await this.twilioClient.messages.create({
-          from: this.TWILIO_WHATSAPP_FROM,
-          to: whatsappNumber,
-          body: `Votre code de confirmation Trocly est : ${otp}. Valable 10 minutes.`,
-        });
-        externalId = message.sid;
-        this.logger.log(
-          `[TWILIO] OTP envoyé vers +${normalizedDigits} (SID: ${message.sid})`,
-        );
+        const client = await this.getTwilioClient();
+        if (client) {
+          const whatsappNumber = this.formatWhatsAppNumber(phoneNumber);
+          const message = await client.messages.create({
+            from: this.TWILIO_WHATSAPP_FROM,
+            to: whatsappNumber,
+            body: `Votre code de confirmation Trocly est : ${otp}. Valable 10 minutes.`,
+          });
+          externalId = message.sid;
+          this.logger.log(
+            `[TWILIO] OTP envoyé vers +${normalizedDigits} (SID: ${message.sid})`,
+          );
+        }
       } catch (error: any) {
         this.logger.warn(`[TWILIO ERROR] ${error?.message || error}`);
       }
