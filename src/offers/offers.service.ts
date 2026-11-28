@@ -191,7 +191,7 @@ export class OffersService implements OnModuleInit {
       relations: {
         initiator: true,
         responder: true,
-        items: { listing: { user: true } },
+        items: { listing: { user: true, city: true } },
       },
     });
     if (!offer) throw new NotFoundException('Offre introuvable');

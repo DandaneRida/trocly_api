@@ -1,17 +1,59 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Report, ReportStatus, ReportType } from './report.entity';
 import { User } from '../users/user.entity';
 import { Listing } from '../listings/listing.entity';
 
+const REPORT_TYPE_ALIASES: Record<string, ReportType> = {
+  fraud: ReportType.FRAUD,
+  spam: ReportType.SPAM,
+  fake_listing: ReportType.SPAM,
+  inappropriate_images: ReportType.INAPPROPRIATE_IMAGES,
+  inappropriate_content: ReportType.INAPPROPRIATE_IMAGES,
+  abusive_content: ReportType.ABUSIVE_CONTENT,
+  harassment: ReportType.ABUSIVE_CONTENT,
+  no_show: ReportType.OTHER,
+  other: ReportType.OTHER,
+};
+
 @Injectable()
-export class ReportsService {
+export class ReportsService implements OnModuleInit {
   constructor(
     @InjectRepository(Report) private reportRepo: Repository<Report>,
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(Listing) private listingRepo: Repository<Listing>,
+    private dataSource: DataSource,
   ) {}
+
+  async onModuleInit() {
+    await this.dataSource
+      .query(`
+        DO $$ BEGIN
+          ALTER TYPE report_status ADD VALUE IF NOT EXISTS 'pending';
+          ALTER TYPE report_status ADD VALUE IF NOT EXISTS 'reviewed';
+          ALTER TYPE report_status ADD VALUE IF NOT EXISTS 'resolved';
+        EXCEPTION WHEN undefined_object THEN NULL; END $$;
+        DO $$ BEGIN
+          ALTER TABLE reports
+            ADD COLUMN IF NOT EXISTS reported_listing_id uuid,
+            ADD COLUMN IF NOT EXISTS reported_user_id uuid,
+            ADD COLUMN IF NOT EXISTS description text,
+            ADD COLUMN IF NOT EXISTS admin_notes text;
+        EXCEPTION WHEN undefined_table THEN NULL; END $$;
+      `)
+      .catch(() => {});
+  }
+
+  private normalizeReportType(raw?: string): ReportType {
+    const key = (raw || 'other').trim().toLowerCase();
+    return REPORT_TYPE_ALIASES[key] || ReportType.OTHER;
+  }
 
   /**
    * Report a user or listing
@@ -21,7 +63,7 @@ export class ReportsService {
     data: {
       reportedUserId?: string;
       reportedListingId?: string;
-      reportType: ReportType;
+      reportType: ReportType | string;
       description?: string;
     },
   ): Promise<Report> {
@@ -30,40 +72,55 @@ export class ReportsService {
       throw new NotFoundException('Reporter not found');
     }
 
-    if (!data.reportedUserId && !data.reportedListingId) {
+    const reportedUserId = data.reportedUserId?.trim() || undefined;
+    const reportedListingId = data.reportedListingId?.trim() || undefined;
+
+    if (!reportedUserId && !reportedListingId) {
       throw new BadRequestException('Must report either a user or a listing');
     }
 
-    if (data.reportedUserId) {
+    let finalReportedUserId = reportedUserId;
+    if (finalReportedUserId) {
+      if (finalReportedUserId === reporterId && !reportedListingId) {
+        throw new BadRequestException('Cannot report yourself');
+      }
       const reportedUser = await this.userRepo.findOne({
-        where: { id: data.reportedUserId },
+        where: { id: finalReportedUserId },
       });
       if (!reportedUser) {
-        throw new NotFoundException('Reported user not found');
-      }
-
-      if (reportedUser.id === reporterId) {
-        throw new BadRequestException('Cannot report yourself');
+        if (!reportedListingId) {
+          throw new NotFoundException('Reported user not found');
+        }
+        finalReportedUserId = undefined;
       }
     }
 
-    if (data.reportedListingId) {
+    if (reportedListingId) {
       const listing = await this.listingRepo.findOne({
-        where: { id: data.reportedListingId },
+        where: { id: reportedListingId },
+        relations: { user: true },
       });
       if (!listing) {
         throw new NotFoundException('Reported listing not found');
       }
+      if (listing.user?.id === reporterId) {
+        throw new BadRequestException('Vous ne pouvez pas signaler votre propre annonce');
+      }
+      if (!finalReportedUserId && listing.user?.id) {
+        finalReportedUserId = listing.user.id;
+      }
     }
+
+    const normalizedType = this.normalizeReportType(data.reportType);
 
     const report = this.reportRepo.create({
       reporter: { id: reporterId } as any,
-      reportedUserId: data.reportedUserId || undefined,
-      reportedListing: data.reportedListingId
-        ? ({ id: data.reportedListingId } as any)
+      reportedUserId: finalReportedUserId,
+      reportedListing: reportedListingId
+        ? ({ id: reportedListingId } as any)
         : undefined,
-      reportType: data.reportType,
-      description: data.description || '',
+      reportType: normalizedType,
+      description: (data.description || '').trim(),
       status: ReportStatus.PENDING,
     } as any);
 
